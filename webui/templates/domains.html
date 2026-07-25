@@ -1,0 +1,31 @@
+{{define "domains"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Домены — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="domains-main">
+    {{template "domains_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "domains_inner"}}
+<section>
+  <h1>Домены → прокси</h1>
+  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
+  {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
+  <form hx-post="/domains/save-restart" hx-target="#domains-main" hx-swap="innerHTML"
+        hx-confirm="Применить домены и перезапустить sing-box?">
+    <textarea name="domains" rows="20" class="wide">{{.Text}}</textarea>
+    <button type="submit">Сохранить и перезапустить</button>
+  </form>
+</section>
+{{end}}

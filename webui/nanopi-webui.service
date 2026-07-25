@@ -1,0 +1,15 @@
+[Unit]
+Description=NanoPi sing-box web UI
+After=network-online.target sing-box.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/opt/nanopi-edge/.env
+Environment=WEBUI_ENV=/opt/nanopi-edge/.env
+ExecStart=/usr/local/bin/nanopi-webui
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

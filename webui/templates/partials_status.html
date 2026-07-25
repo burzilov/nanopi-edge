@@ -1,0 +1,21 @@
+{{define "partials/status"}}
+<div class="card">
+  <p><span class="label">sing-box</span> <span class="pill {{if eq .Active "работает"}}ok{{else}}bad{{end}}">{{.Active}}</span></p>
+  <p><span class="label">время работы</span> {{.Uptime}}</p>
+  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <div class="row">
+    <label class="vless-pick">VLESS
+      <select name="name"
+              hx-post="/proxy"
+              hx-trigger="change"
+              hx-target="#status"
+              hx-swap="innerHTML">
+        {{range .All}}
+        <option value="{{.}}" {{if eq . $.Proxy}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </label>
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,96 @@
+name: webui-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия для имени артефакта (без префикса v), если не из tag"
+        required: false
+        default: "dev"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: webui/go.mod
+          cache: false
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            v="${{ inputs.version }}"
+            echo "version=v${v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build linux/arm64
+        env:
+          CGO_ENABLED: "0"
+          GOTOOLCHAIN: auto
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          mkdir -p dist
+          GOOS=linux GOARCH=arm64 go build -trimpath \
+            -ldflags="-s -w -X main.Version=${VER}" \
+            -o dist/nanopi-webui .
+          file dist/nanopi-webui || true
+
+      - name: Pack artifact
+        id: pack
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          STAGE="nanopi-webui-linux-arm64"
+          mkdir -p "/tmp/${STAGE}"
+          cp dist/nanopi-webui "/tmp/${STAGE}/"
+          cp nanopi-webui.service "/tmp/${STAGE}/"
+          cp "${GITHUB_WORKSPACE}/install-webui.sh" "/tmp/${STAGE}/"
+          printf '%s\n' "$VER" > "/tmp/${STAGE}/VERSION"
+          ARCHIVE="nanopi-webui-linux-arm64.tar.gz"
+          tar -C /tmp -czf "${GITHUB_WORKSPACE}/${ARCHIVE}" "$STAGE"
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+          ls -la "${GITHUB_WORKSPACE}/${ARCHIVE}"
+
+      - name: Upload artifact (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanopi-webui-linux-arm64
+          path: ${{ steps.pack.outputs.archive }}
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pack.outputs.archive }}
+          generate_release_notes: true
+          body: |
+            WebUI для NanoPi edge (`linux/arm64`), версия `${{ steps.ver.outputs.version }}`.
+
+            Установка / обновление на плате:
+            ```bash
+            bash install-webui.sh
+            # или неинтерактивно:
+            WEBUI_VERSION=${{ steps.ver.outputs.version }} bash install-webui.sh --noninteractive
+            ```
+
+            Артефакт: `nanopi-webui-linux-arm64.tar.gz`
+            (бинарь + unit + `install-webui.sh` + `VERSION`).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

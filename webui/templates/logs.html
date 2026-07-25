@@ -1,0 +1,26 @@
+{{define "logs"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Логи — NanoPi</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main>
+    <section>
+      <div class="logs-head">
+        <h1>Логи sing-box</h1>
+        <button type="button" id="log-clear" class="secondary">Очистить</button>
+      </div>
+      {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+      <div id="log-view" class="logs">{{.LogsHTML}}</div>
+      <script src="/static/logs.js"></script>
+    </section>
+  </main>
+</body>
+</html>
+{{end}}

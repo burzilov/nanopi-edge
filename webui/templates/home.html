@@ -1,0 +1,26 @@
+{{define "home"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main>
+    <section>
+      <h1>Статус</h1>
+      <div id="status"
+           hx-get="/partials/status"
+           hx-trigger="load, every 5s"
+           hx-swap="innerHTML">
+        Загрузка…
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+{{end}}

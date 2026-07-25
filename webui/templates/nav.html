@@ -1,0 +1,56 @@
+{{define "nav"}}
+<header class="top">
+  <form class="hdr-restart"
+        hx-post="/sing-box/restart"
+        hx-target="#toast-host"
+        hx-swap="innerHTML"
+        hx-on::after-request="var s=document.getElementById('status'); if(s) htmx.trigger(s,'load')">
+    <button type="submit" class="danger">Перезапустить sing-box</button>
+  </form>
+  <nav>
+    <a href="/">Статус</a>
+    <a href="/logs">Логи</a>
+    <a href="/domains">Домены</a>
+    <a href="/config">Конфиг</a>
+  </nav>
+  <div class="hdr-version">
+    <span class="ver-label" title="Версия панели">{{AppVersion}}</span>
+    <button type="button" class="secondary" id="btn-check-updates">Обновления</button>
+  </div>
+</header>
+<div id="toast-host" class="toast-host" aria-live="polite"
+     hx-on::after-swap="clearTimeout(window.__toastHide); window.__toastHide=setTimeout(function(){ document.getElementById('toast-host').innerHTML=''; }, 5000)"></div>
+<dialog id="updates-dialog" class="updates-dialog">
+  <form method="dialog" class="updates-form">
+    <h2>Обновления WebUI</h2>
+    <p id="updates-status" class="hint">—</p>
+    <pre id="updates-notes" class="updates-notes" hidden></pre>
+    <div class="updates-actions">
+      <button type="submit" class="secondary" value="cancel">Закрыть</button>
+      <button type="button" id="btn-apply-update" class="danger" hidden>Установить</button>
+    </div>
+  </form>
+</dialog>
+<div id="update-overlay" class="update-overlay" hidden>
+  <div class="update-overlay-card">
+    <p>Устанавливаю обновление…</p>
+    <p class="hint">Панель перезапустится. Не закрывайте вкладку.</p>
+  </div>
+</div>
+<script src="/static/updates.js" defer></script>
+{{end}}
+
+{{define "partials/flash"}}
+{{if .Message}}
+<div class="toast toast-ok" role="status">
+  <div class="toast-title">Уведомление</div>
+  <div class="toast-body">{{.Message}}</div>
+</div>
+{{end}}
+{{if .Error}}
+<div class="toast toast-err" role="alert">
+  <div class="toast-title">Ошибка</div>
+  <div class="toast-body">{{.Error}}</div>
+</div>
+{{end}}
+{{end}}

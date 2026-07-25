@@ -1,0 +1,39 @@
+{{define "config"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Конфиг — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="config-main">
+    {{template "config_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "config_inner"}}
+<section>
+  <h1>Конфиг sing-box</h1>
+  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
+  {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
+  {{if .CheckOut}}<pre class="logs">{{.CheckOut}}</pre>{{end}}
+  <form>
+    <textarea name="config" rows="28" class="wide mono">{{.Config}}</textarea>
+    <div class="row">
+      <button type="button"
+              hx-post="/config/check" hx-target="#config-main" hx-swap="innerHTML"
+              hx-include="closest form">Проверить без сохранения</button>
+      <button type="button" class="danger"
+              hx-post="/config/save-restart" hx-target="#config-main" hx-swap="innerHTML"
+              hx-include="closest form"
+              hx-confirm="Сохранить конфиг и перезапустить sing-box?">Сохранить и перезапустить</button>
+    </div>
+  </form>
+</section>
+{{end}}
