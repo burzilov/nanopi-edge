@@ -2,14 +2,14 @@
 
 Edge-роутер на **NanoPi R3S LTS** (Armbian): устройство ставится в разрыв между
 кабелем провайдера и домашним роутером. На краю — **sing-box** (TUN + VLESS+Reality),
-минимальный NAT и DHCP для WAN домашнего роутера.
+минимальный NAT и dual-serve на LAN (DHCP + PPPoE-server).
 
 ```text
-ISP (белый IP)
-  → WAN NanoPi          sing-box · ip_forward · MASQUERADE · DHCP LAN
-  → LAN NanoPi 10.10.10.1/24
-  → WAN домашнего роутера (серый 10.10.10.x)
-  → LAN роутера 192.168.1.0/24 → клиенты
+ISP (DHCP или PPPoE ± VLAN)
+  → WAN NanoPi          sing-box · ip_forward · MASQUERADE
+  → LAN NanoPi 10.10.10.1/24   DHCP и/или PPPoE-server (accept-any)
+  → WAN домашнего роутера
+  → LAN роутера → клиенты
 ```
 
 Белый IP остаётся на NanoPi. Double NAT здесь нормален: роутер «видит» NanoPi
@@ -20,8 +20,11 @@ ISP (белый IP)
 - Выборочный прокси: remote ruleset’ы + домены → VLESS, остальное — direct
 - Несколько VLESS+Reality узлов, переключение через clash_api / CLI / WebUI
 - DNS: AdGuard DoH в sing-box; dnsmasq на LAN → AdGuard
-- Лёгкая веб-панель (Go + HTMX): статус, логи, proxy, домены, редактор конфига
-- Одноразовые установщики: скопировал скрипт на плату — запустил
+- WAN к ISP: **DHCP** или **PPPoE** (логин/пароль, опциональный VLAN) — CLI и WebUI
+- LAN к роутеру: одновременно DHCP и PPPoE-server (accept-any) — роутер может
+  оставаться в своём WAN-режиме
+- Лёгкая веб-панель (Go + HTMX): статус, WAN, логи, proxy, домены, конфиг
+- Установщики: один файл `install-singbox.sh` (на плате пишет `/opt/nanopi-edge/scripts/`)
 
 **Не цель проекта:** тяжёлый firewall, WireGuard как основной транспорт,
 IPv6 в первой итерации, раздача белого IP роутеру (passthrough).
@@ -48,27 +51,33 @@ ssh root@<lab-ip>
 bash install-singbox.sh
 ```
 
-Скрипт интерактивный: пакеты, sing-box, мастер VLESS, приёмочные тесты.
-Врезку ISP **не** делает — в конце печатает чеклист кабелей и
+Скрипт интерактивный: пакеты (`ppp`/`pppoe` и др.), sing-box, мастер VLESS,
+приёмочные тесты. Врезку ISP **не** делает — в конце печатает чеклист кабелей и
 `/opt/nanopi-edge/scripts/router-on`.
 
 После успеха `install-singbox.sh` можно удалить. Остаётся:
 
 ```text
 /opt/nanopi-edge/.env
-/opt/nanopi-edge/scripts/{router-on,lab-on,proxy-select}
+/opt/nanopi-edge/scripts/{router-on,lab-on,wan-dhcp,wan-pppoe,wan-status,proxy-select,common.sh}
 /etc/sing-box/config.json
 ```
 
 ### 2. Врезка (вручную)
 
 1. У клиентов роутера: gateway/DNS = сам роутер (не старый прокси/VM).
-2. `/opt/nanopi-edge/scripts/router-on`
+2. `/opt/nanopi-edge/scripts/router-on` — LAN dual-serve + WAN DHCP.
 3. Кабели: ISP → WAN NanoPi; LAN NanoPi → WAN роутера.
-4. WAN роутера: DHCP → `10.10.10.x`, шлюз `10.10.10.1`.
-5. SSH после врезки: `root@10.10.10.1`
+4. WAN роутера: DHCP → `10.10.10.x`, шлюз `10.10.10.1`, **или** PPPoE с любыми
+   кредами (NanoPi принимает).
+5. Если у ISP на NanoPi нужен PPPoE: панель `http://10.10.10.1/` или
+   `wan-pppoe <user> <pass> [vlan]`. Откат: `wan-dhcp`.
+6. SSH / панель: `root@10.10.10.1`, `http://10.10.10.1/`.
 
-Откат: ISP обратно в WAN роутера, NanoPi WAN в LAN роутера,
+Если панель недоступна с LAN роутера до поднятия его WAN — ноут патчкордом в
+LAN NanoPi.
+
+Откат lab: ISP обратно в WAN роутера, NanoPi WAN в LAN роутера,
 `/opt/nanopi-edge/scripts/lab-on`.
 
 ### 3. WebUI (опционально)
@@ -84,22 +93,23 @@ bash install-webui.sh
 ```
 
 Панель: `http://10.10.10.1/` (без auth — доверяй только LAN).
-В шапке — версия и кнопка «Обновления» (проверка GitHub Release и установка
-через `install-webui.sh --noninteractive`).
+На статусе — переключатель WAN DHCP|PPPoE, креды, VLAN; пароль ISP в
+`/etc/ppp/nanopi-wan.secret` (0600). В шапке — версия и «Обновления».
 
 ## Репозиторий
 
 | Путь                 | Назначение                                           |
 | -------------------- | ---------------------------------------------------- |
-| `install-singbox.sh` | Одноразовая установка edge                           |
+| `install-singbox.sh` | Одноразовая установка edge (+ вшитые scripts/)       |
+| `lab/`               | Fake ISP/CPE и чеклист PPPoE-стенда                  |
 | `install-webui.sh`   | Установка панели с GitHub Release                    |
 | `release.sh`         | Patch-релиз: `VERSION` ↑, commit, tag, push          |
 | `webui/`             | Исходники панели (Go)                                |
 | `.github/workflows/` | Сборка `nanopi-webui-linux-arm64.tar.gz` на тег `v*` |
 | `VERSION`            | Текущая версия релиза                                |
 
-Секреты (UUID, Reality keys, белые IP, боевой `config.json`) в git **не**
-хранятся. Они появляются только на плате при установке.
+Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE) в git
+**не** хранятся. Они появляются только на плате при установке / в UI.
 
 ## Управление на хосте
 
@@ -107,6 +117,9 @@ bash install-webui.sh
 # профиль сети
 /opt/nanopi-edge/scripts/router-on
 /opt/nanopi-edge/scripts/lab-on
+/opt/nanopi-edge/scripts/wan-dhcp
+/opt/nanopi-edge/scripts/wan-pppoe <user> <pass> [vlan]
+/opt/nanopi-edge/scripts/wan-status | jq .
 
 # активный VLESS в selector «proxy»
 /opt/nanopi-edge/scripts/proxy-select get
@@ -114,9 +127,13 @@ bash install-webui.sh
 
 # сервисы
 systemctl status sing-box
-systemctl status nanopi-webui   # если ставил UI
+systemctl status nanopi-pppoe-server
+systemctl status nanopi-wan-pppoe   # только в режиме WAN PPPoE
+systemctl status nanopi-webui       # если ставил UI
 journalctl -u sing-box -f
 ```
+
+Lab без PPPoE у домашнего ISP: [`lab/CHECKLIST.md`](lab/CHECKLIST.md).
 
 ## Разработка WebUI
 

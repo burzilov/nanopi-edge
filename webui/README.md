@@ -4,6 +4,11 @@ Go + `html/template` + HTMX. Слушает `WEBUI_LISTEN` из `/opt/nanopi-edg
 (по умолчанию `10.10.10.1:80`). Без auth (LAN trust). clash_api только через
 backend на `127.0.0.1:9090`.
 
+На статусе: sing-box / VLESS и блок **WAN к ISP** (DHCP | PPPoE + login/password/VLAN).
+API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-pppoe`.
+Пароль ISP хранится в `/etc/ppp/nanopi-wan.secret` (0600), в форму подставляется
+целиком (LAN trust).
+
 Домены → proxy правятся прямо в `/etc/sing-box/config.json` (правило
 `outbound=proxy` + `domain_suffix`), без отдельного `domains-proxy.json`.
 

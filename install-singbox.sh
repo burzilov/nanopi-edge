@@ -8,9 +8,9 @@
 #
 # После успешной установки install.sh можно удалить.
 # Повседневное управление — скрипты в /opt/nanopi-edge/scripts/:
-#   router-on | lab-on | proxy-select
+#   router-on | lab-on | wan-dhcp | wan-pppoe | wan-status | proxy-select
 #
-# .env и будущий webui живут в /opt/nanopi-edge/.
+# .env и webui живут в /opt/nanopi-edge/.
 # Боевой конфиг sing-box: /etc/sing-box/config.json (единый файл).
 #
 set -euo pipefail
@@ -118,8 +118,13 @@ cmd_status() {
   echo "=== route ==="
   ip route | head -10
   echo "=== services ==="
-  systemctl is-active sing-box nftables dnsmasq 2>/dev/null || true
+  systemctl is-active sing-box nftables dnsmasq nanopi-pppoe-server nanopi-wan-pppoe 2>/dev/null || true
   systemctl is-enabled sing-box nftables dnsmasq 2>/dev/null || true
+  echo "=== wan-status ==="
+  if [[ -x "$SCRIPTS_DIR/wan-status" ]]; then
+    "$SCRIPTS_DIR/wan-status" 2>/dev/null | head -c 2000 || true
+    echo
+  fi
   echo "=== scripts ==="
   ls -la "$SCRIPTS_DIR" 2>/dev/null || true
 }
@@ -128,106 +133,64 @@ cmd_status() {
 
 write_ops_scripts() {
   explain \
-    "Запишу постоянные утилиты в ${SCRIPTS_DIR}/ (router-on, lab-on, proxy-select).
+    "Запишу постоянные утилиты в ${SCRIPTS_DIR}/
+(router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, common.sh).
 Они читают ${OPT_ENV} и не зависят от install.sh — его потом можно удалить." \
-    "Три executable-скрипта на месте"
+    "Скрипты executable на месте"
 
   mkdir -p "$SCRIPTS_DIR"
 
-  cat > "$SCRIPTS_DIR/lab-on" <<'EOF'
+  cat > "$SCRIPTS_DIR/common.sh" <<'EOF'
 #!/bin/bash
-# Откат в lab: WAN = DHCP в LAN домашнего роутера; dnsmasq/nft off.
-set -euo pipefail
-ENV_FILE=/opt/nanopi-edge/.env
-NETPLAN_DIR=/etc/netplan
-[[ -f "$ENV_FILE" ]] || { echo "ERROR: нет $ENV_FILE" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-WAN_IF=${WAN_IF:-end0}
-LAN_IF=${LAN_IF:-enp1s0}
+# Общие хелперы для /opt/nanopi-edge/scripts/* (source, не запускать).
+# shellcheck shell=bash
 
-echo "==> lab-on: ${WAN_IF} DHCP (домашняя LAN). SSH может моргнуть."
-rm -f "$NETPLAN_DIR"/40-router-wan-dhcp.yaml "$NETPLAN_DIR"/50-router-lan.yaml
-cat > "$NETPLAN_DIR/30-ethernets-dhcp.yaml" <<YAML
-# NanoPi lab: WAN (${WAN_IF}) в LAN домашнего роутера
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${WAN_IF}:
-      dhcp4: true
-      dhcp6: false
-YAML
-chmod 600 "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
+ENV_FILE="${ENV_FILE:-/opt/nanopi-edge/.env}"
+NETPLAN_DIR="${NETPLAN_DIR:-/etc/netplan}"
+PPP_PEER="${PPP_PEER:-/etc/ppp/peers/nanopi-wan}"
+PPP_SECRET_FILE="${PPP_SECRET_FILE:-/etc/ppp/nanopi-wan.secret}"
+PPP_SERVER_OPTS="${PPP_SERVER_OPTS:-/etc/ppp/pppoe-server-options}"
+PPPOE_SERVER_UNIT="${PPPOE_SERVER_UNIT:-nanopi-pppoe-server.service}"
+WAN_PPPOE_UNIT="${WAN_PPPOE_UNIT:-nanopi-wan-pppoe.service}"
 
-systemctl disable --now nftables 2>/dev/null || true
-systemctl mask dnsmasq 2>/dev/null || true
-systemctl stop dnsmasq 2>/dev/null || true
-rm -f /etc/dnsmasq.d/lan.conf
+nanopi_load_env() {
+  [[ -f "$ENV_FILE" ]] || { echo "ERROR: нет $ENV_FILE" >&2; exit 1; }
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  WAN_IF=${WAN_IF:-end0}
+  LAN_IF=${LAN_IF:-enp1s0}
+  WAN_MODE=${WAN_MODE:-dhcp}
+  PPPOE_USER=${PPPOE_USER:-}
+  PPPOE_VLAN=${PPPOE_VLAN:-}
+}
 
-netplan apply
-echo "[ok] lab-on. Проверь: ip -br addr"
-EOF
+nanopi_set_env_kv() {
+  local key="$1" val="$2"
+  local tmp
+  tmp=$(mktemp)
+  if [[ -f "$ENV_FILE" ]]; then
+    grep -v "^${key}=" "$ENV_FILE" >"$tmp" || true
+  else
+    : >"$tmp"
+  fi
+  # экранируем только перевод строки
+  val=${val//$'\n'/}
+  printf '%s=%s\n' "$key" "$val" >>"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
 
-  cat > "$SCRIPTS_DIR/router-on" <<'EOF'
-#!/bin/bash
-# Врезка: WAN DHCP (ISP) + LAN 10.10.10.1 + nft MASQUERADE + dnsmasq.
-set -euo pipefail
-ENV_FILE=/opt/nanopi-edge/.env
-NETPLAN_DIR=/etc/netplan
-[[ -f "$ENV_FILE" ]] || { echo "ERROR: нет $ENV_FILE" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-WAN_IF=${WAN_IF:-end0}
-LAN_IF=${LAN_IF:-enp1s0}
-
-echo "==> router-on"
-echo "    Кабели: ISP→WAN(${WAN_IF}), LAN(${LAN_IF})→WAN роутера."
-echo "    SSH может моргнуть на netplan apply."
-read -r -p "Продолжить? [y/N]: " reply || true
-[[ "${reply:-}" =~ ^[Yy]$ ]] || exit 0
-
-rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
-
-cat > "$NETPLAN_DIR/40-router-wan-dhcp.yaml" <<YAML
-# NanoPi router: WAN (${WAN_IF}) = DHCP от ISP
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${WAN_IF}:
-      dhcp4: true
-      dhcp6: false
-      dhcp4-overrides:
-        route-metric: 100
-YAML
-chmod 600 "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
-
-cat > "$NETPLAN_DIR/50-router-lan.yaml" <<YAML
-# NanoPi router: LAN (${LAN_IF}) = 10.10.10.1/24
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${LAN_IF}:
-      dhcp4: false
-      dhcp6: false
-      optional: true
-      ignore-carrier: true
-      addresses:
-        - 10.10.10.1/24
-YAML
-chmod 600 "$NETPLAN_DIR/50-router-lan.yaml"
-
-cat > /etc/nftables.conf <<NFT
+nanopi_write_nft() {
+  local wan="$1"
+  cat > /etc/nftables.conf <<NFT
 #!/usr/sbin/nft -f
-# Минимальный NAT на краю (схема B)
+# Минимальный NAT на краю + MSS clamp для PPPoE
 flush ruleset
 
 table inet nat {
 	chain postrouting {
 		type nat hook postrouting priority srcnat; policy accept;
-		oifname "${WAN_IF}" masquerade
+		oifname "${wan}" masquerade
 		oifname "ppp0" masquerade
 	}
 }
@@ -235,18 +198,24 @@ table inet nat {
 table inet filter {
 	chain forward {
 		type filter hook forward priority filter; policy accept;
+		tcp flags syn tcp option maxseg size set 1452
 	}
 }
 NFT
+}
 
-mkdir -p /etc/dnsmasq.d
-cat > /etc/dnsmasq.d/lan.conf <<DNS
+nanopi_write_dnsmasq_lan() {
+  local lan="$1" wan="$2"
+  mkdir -p /etc/dnsmasq.d
+  cat > /etc/dnsmasq.d/lan.conf <<DNS
 # DHCP только на LAN NanoPi → WAN домашнего роутера
-interface=${LAN_IF}
+interface=${lan}
 bind-dynamic
 except-interface=lo
-except-interface=${WAN_IF}
+except-interface=${wan}
 except-interface=sb-tun
+except-interface=ppp0
+except-interface=ppp1
 
 domain-needed
 bogus-priv
@@ -260,20 +229,518 @@ no-resolv
 server=94.140.14.14
 server=94.140.15.15
 DNS
-rm -f /etc/dnsmasq.d/README
+  rm -f /etc/dnsmasq.d/README
+}
 
-systemctl unmask dnsmasq
-systemctl enable nftables dnsmasq
+nanopi_write_lan_netplan() {
+  local lan="$1"
+  cat > "$NETPLAN_DIR/50-router-lan.yaml" <<YAML
+# NanoPi router: LAN (${lan}) = 10.10.10.1/24
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${lan}:
+      dhcp4: false
+      dhcp6: false
+      optional: true
+      ignore-carrier: true
+      addresses:
+        - 10.10.10.1/24
+YAML
+  chmod 600 "$NETPLAN_DIR/50-router-lan.yaml"
+}
+
+nanopi_write_pppoe_server_opts() {
+  cat > "$PPP_SERVER_OPTS" <<'OPTS'
+# NanoPi LAN PPPoE server — accept-any (в т.ч. пустые креды)
+noauth
+nologin
+ms-dns 10.10.10.1
+netmask 255.255.255.0
+default-asyncmap
+mtu 1492
+mru 1492
+lcp-echo-interval 30
+lcp-echo-failure 4
+noipdefault
+nodefaultroute
+noproxyarp
+OPTS
+  chmod 644 "$PPP_SERVER_OPTS"
+}
+
+# Accept-any для LAN-server + опциональная строка WAN-клиента (user/pass).
+nanopi_write_ppp_auth_secrets() {
+  local user="${1:-}" pass="${2:-}"
+  umask 077
+  cat > /etc/ppp/pap-secrets <<PAP
+# NanoPi: LAN PPPoE-server accept-any + optional WAN client
+*               *       ""                      *
+*               *       *                       *
+PAP
+  cat > /etc/ppp/chap-secrets <<CHAP
+# NanoPi: LAN PPPoE-server accept-any + optional WAN client
+*               *       ""                      *
+*               *       *                       *
+CHAP
+  if [[ -n "$user" || -n "$pass" ]]; then
+    printf '"%s"\t*\t"%s"\t*\n' "$user" "$pass" >>/etc/ppp/pap-secrets
+    printf '"%s"\t*\t"%s"\t*\n' "$user" "$pass" >>/etc/ppp/chap-secrets
+  fi
+  chmod 600 /etc/ppp/pap-secrets /etc/ppp/chap-secrets
+}
+
+nanopi_write_pppoe_server_unit() {
+  local lan="$1"
+  cat > "/etc/systemd/system/${PPPOE_SERVER_UNIT}" <<UNIT
+[Unit]
+Description=NanoPi LAN PPPoE server (accept-any)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/pppoe-server -F -I ${lan} -L 10.10.10.1 -R 10.10.10.2 -N 1 -C nanopi
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+nanopi_ensure_lan_dual_serve() {
+  local lan wan
+  lan=${LAN_IF:-enp1s0}
+  wan=${WAN_IF:-end0}
+
+  nanopi_write_lan_netplan "$lan"
+  nanopi_write_dnsmasq_lan "$lan" "$wan"
+  nanopi_write_nft "$wan"
+  nanopi_write_pppoe_server_opts
+  # не затираем WAN-клиентские строки — вызывающий пишет secrets сам
+  if [[ ! -f /etc/ppp/pap-secrets ]]; then
+    nanopi_write_ppp_auth_secrets "" ""
+  fi
+  nanopi_write_pppoe_server_unit "$lan"
+
+  systemctl unmask dnsmasq 2>/dev/null || true
+  systemctl enable nftables dnsmasq "$PPPOE_SERVER_UNIT"
+  systemctl daemon-reload
+
+  ip link set "$lan" up || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    ip -4 -br addr show "$lan" 2>/dev/null | grep -q '10\.10\.10\.1' && break
+    sleep 0.5
+  done
+
+  systemctl restart nftables
+  systemctl restart dnsmasq
+  systemctl restart "$PPPOE_SERVER_UNIT"
+}
+
+nanopi_stop_wan_pppoe() {
+  systemctl disable --now "$WAN_PPPOE_UNIT" 2>/dev/null || true
+  pkill -f 'pppd call nanopi-wan' 2>/dev/null || true
+  rm -f "$PPP_PEER"
+  if [[ -n "${PPPOE_VLAN:-}" ]]; then
+    ip link delete "${WAN_IF}.${PPPOE_VLAN}" 2>/dev/null || true
+  fi
+  rm -f "$NETPLAN_DIR"/45-router-wan-vlan.yaml
+}
+
+nanopi_write_wan_dhcp_netplan() {
+  local wan="$1"
+  rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
+  rm -f "$NETPLAN_DIR/45-router-wan-vlan.yaml"
+  cat > "$NETPLAN_DIR/40-router-wan-dhcp.yaml" <<YAML
+# NanoPi router: WAN (${wan}) = DHCP от ISP
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${wan}:
+      dhcp4: true
+      dhcp6: false
+      dhcp4-overrides:
+        route-metric: 100
+YAML
+  chmod 600 "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
+}
+
+nanopi_patch_singbox_exclude() {
+  # exclude_interface: WAN_IF + ppp0 + optional VLAN subif
+  local cfg="${SINGBOX_CONFIG:-/etc/sing-box/config.json}"
+  local wan="$WAN_IF"
+  local vlan="${PPPOE_VLAN:-}"
+  [[ -f "$cfg" ]] || return 0
+  local tmp
+  tmp=$(mktemp)
+  if [[ -n "$vlan" ]]; then
+    jq --arg wan "$wan" --arg vif "${wan}.${vlan}" '
+      (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0", $vif]
+    ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
+  else
+    jq --arg wan "$wan" '
+      (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0"]
+    ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
+  fi
+  chmod 600 "$cfg"
+  if command -v sing-box >/dev/null 2>&1; then
+    sing-box check -c "$cfg" >/dev/null 2>&1 || true
+  fi
+  systemctl try-reload-or-restart sing-box 2>/dev/null || systemctl restart sing-box 2>/dev/null || true
+}
+
+nanopi_read_ppp_password() {
+  if [[ -f "$PPP_SECRET_FILE" ]]; then
+    tr -d '\r\n' <"$PPP_SECRET_FILE"
+  else
+    echo -n ""
+  fi
+}
+
+nanopi_write_ppp_password() {
+  local pass="$1"
+  umask 077
+  printf '%s\n' "$pass" >"$PPP_SECRET_FILE"
+  chmod 600 "$PPP_SECRET_FILE"
+}
+EOF
+
+  cat > "$SCRIPTS_DIR/wan-dhcp" <<'EOF'
+#!/bin/bash
+# WAN = DHCP от ISP; LAN dual-serve не трогаем (кроме ensure).
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+echo "==> wan-dhcp: ${WAN_IF} DHCP"
+
+nanopi_stop_wan_pppoe
+nanopi_write_wan_dhcp_netplan "$WAN_IF"
+nanopi_set_env_kv WAN_MODE dhcp
+# VLAN сбрасываем при откате на DHCP
+nanopi_set_env_kv PPPOE_VLAN ""
+PPPOE_VLAN=""
+
+nanopi_write_ppp_auth_secrets "" ""
+nanopi_ensure_lan_dual_serve
+nanopi_patch_singbox_exclude
+
 netplan apply
-ip link set "$LAN_IF" up || true
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  ip -4 -br addr show "$LAN_IF" | grep -q '10\.10\.10\.1' && break
-  sleep 0.5
-done
+ip link set "$WAN_IF" up || true
 systemctl restart nftables
-systemctl restart dnsmasq
-systemctl is-active dnsmasq nftables
-echo "[ok] router-on. Проверь: ip -br addr; ${LAN_IF} должен быть 10.10.10.1"
+
+echo "[ok] wan-dhcp. WAN_MODE=dhcp"
+EOF
+
+  cat > "$SCRIPTS_DIR/wan-pppoe" <<'EOF'
+#!/bin/bash
+# WAN = PPPoE-клиент к ISP (+ опциональный VLAN). LAN dual-serve без изменений.
+# Env: PPPOE_USER, PPPOE_VLAN (из .env). Пароль: /etc/ppp/nanopi-wan.secret
+# CLI: wan-pppoe [user] [password] [vlan]
+#      или PPPOE_USER=… PPPOE_PASS=… PPPOE_VLAN=… wan-pppoe
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+USER_IN="${1:-${PPPOE_USER:-}}"
+PASS_IN="${2:-${PPPOE_PASS:-}}"
+VLAN_IN="${3:-${PPPOE_VLAN:-}}"
+
+if [[ -z "$PASS_IN" && -f "$PPP_SECRET_FILE" && $# -lt 2 ]]; then
+  PASS_IN=$(nanopi_read_ppp_password)
+fi
+
+if [[ -z "$USER_IN" && -z "$PASS_IN" ]]; then
+  # пустые креды допустимы (редкий ISP); всё равно поднимаем peer
+  :
+fi
+
+if [[ -n "$VLAN_IN" ]]; then
+  if ! [[ "$VLAN_IN" =~ ^[0-9]+$ ]] || (( VLAN_IN < 1 || VLAN_IN > 4094 )); then
+    echo "ERROR: PPPOE_VLAN должен быть 1–4094 или пусто" >&2
+    exit 1
+  fi
+fi
+
+echo "==> wan-pppoe: user=${USER_IN:-(empty)} vlan=${VLAN_IN:-(none)}"
+
+nanopi_stop_wan_pppoe
+
+# WAN ethernet: без DHCP, только L2 (+ VLAN)
+rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml" "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
+
+if [[ -n "$VLAN_IN" ]]; then
+  cat > "$NETPLAN_DIR/45-router-wan-vlan.yaml" <<YAML
+# NanoPi WAN PPPoE поверх VLAN ${VLAN_IN}
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${WAN_IF}:
+      dhcp4: false
+      dhcp6: false
+      optional: true
+  vlans:
+    ${WAN_IF}.${VLAN_IN}:
+      id: ${VLAN_IN}
+      link: ${WAN_IF}
+      dhcp4: false
+      dhcp6: false
+YAML
+  chmod 600 "$NETPLAN_DIR/45-router-wan-vlan.yaml"
+  NIC="nic-${WAN_IF}.${VLAN_IN}"
+else
+  rm -f "$NETPLAN_DIR/45-router-wan-vlan.yaml"
+  cat > "$NETPLAN_DIR/40-router-wan-dhcp.yaml" <<YAML
+# NanoPi WAN: L2 для PPPoE (без DHCP)
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${WAN_IF}:
+      dhcp4: false
+      dhcp6: false
+      optional: true
+YAML
+  chmod 600 "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
+  NIC="nic-${WAN_IF}"
+fi
+
+nanopi_write_ppp_password "$PASS_IN"
+nanopi_set_env_kv WAN_MODE pppoe
+nanopi_set_env_kv PPPOE_USER "$USER_IN"
+nanopi_set_env_kv PPPOE_VLAN "$VLAN_IN"
+PPPOE_USER="$USER_IN"
+PPPOE_VLAN="$VLAN_IN"
+
+cat > "$PPP_PEER" <<PEER
+# NanoPi WAN PPPoE client → ISP
+plugin rp-pppoe.so
+${NIC}
+user "${USER_IN}"
+noipdefault
+defaultroute
+replacedefaultroute
+persist
+maxfail 0
+holdoff 5
+mtu 1492
+mru 1492
+usepeerdns
+lcp-echo-interval 30
+lcp-echo-failure 4
+nodetach
+PEER
+chmod 600 "$PPP_PEER"
+
+cat > "/etc/systemd/system/${WAN_PPPOE_UNIT}" <<UNIT
+[Unit]
+Description=NanoPi WAN PPPoE client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/pppd call nanopi-wan
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+nanopi_ensure_lan_dual_serve
+nanopi_write_ppp_auth_secrets "$USER_IN" "$PASS_IN"
+nanopi_patch_singbox_exclude
+
+netplan apply
+ip link set "$WAN_IF" up || true
+if [[ -n "$VLAN_IN" ]]; then
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    ip link show "${WAN_IF}.${VLAN_IN}" &>/dev/null && break
+    sleep 0.3
+  done
+fi
+
+systemctl daemon-reload
+systemctl enable "$WAN_PPPOE_UNIT"
+systemctl restart "$WAN_PPPOE_UNIT"
+systemctl restart nftables
+
+echo "[ok] wan-pppoe. Жди UP ppp0: journalctl -u ${WAN_PPPOE_UNIT} -f"
+EOF
+
+  cat > "$SCRIPTS_DIR/wan-status" <<'EOF'
+#!/bin/bash
+# Статус WAN/LAN в JSON (для WebUI и CLI).
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+mode=${WAN_MODE:-dhcp}
+user=${PPPOE_USER:-}
+vlan=${PPPOE_VLAN:-}
+pass=$(nanopi_read_ppp_password)
+
+ppp0_up=false
+ppp0_ip=""
+if ip link show ppp0 &>/dev/null; then
+  ppp0_up=true
+  ppp0_ip=$(ip -4 -o addr show ppp0 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
+fi
+
+wan_ip=$(ip -4 -o addr show "$WAN_IF" 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
+lan_ip=$(ip -4 -o addr show "$LAN_IF" 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
+
+# LAN DHCP leases (активные)
+dhcp_leases=0
+lease_file=""
+for f in /var/lib/misc/dnsmasq.leases /var/lib/dnsmasq/dnsmasq.leases; do
+  if [[ -f "$f" ]]; then lease_file=$f; break; fi
+done
+if [[ -n "$lease_file" ]]; then
+  dhcp_leases=$(awk 'NF>=4 {c++} END{print c+0}' "$lease_file")
+fi
+
+# LAN PPPoE session (обычно ppp1)
+lan_pppoe_up=false
+lan_pppoe_if=""
+while read -r ifname; do
+  [[ "$ifname" == ppp0 ]] && continue
+  [[ "$ifname" =~ ^ppp[0-9]+$ ]] || continue
+  lan_pppoe_up=true
+  lan_pppoe_if=$ifname
+  break
+done < <(ip -br link 2>/dev/null | awk '{print $1}' | tr -d '@:*' || true)
+
+dnsmasq_active=$(systemctl is-active dnsmasq 2>/dev/null || echo inactive)
+pppoe_srv_active=$(systemctl is-active nanopi-pppoe-server.service 2>/dev/null || echo inactive)
+wan_pppoe_active=$(systemctl is-active nanopi-wan-pppoe.service 2>/dev/null || echo inactive)
+
+last_err=""
+if [[ "$mode" == pppoe ]]; then
+  last_err=$(journalctl -u nanopi-wan-pppoe.service -n 30 --no-pager -o cat 2>/dev/null \
+    | grep -iE 'failed|error|timeout|CHAP|PAP|Connection terminated|Modem hangup' \
+    | tail -3 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  jq -n \
+    --arg mode "$mode" \
+    --arg user "$user" \
+    --arg password "$pass" \
+    --arg vlan "$vlan" \
+    --arg wan_if "$WAN_IF" \
+    --arg lan_if "$LAN_IF" \
+    --arg wan_ip "$wan_ip" \
+    --arg lan_ip "$lan_ip" \
+    --arg ppp0_ip "$ppp0_ip" \
+    --argjson ppp0_up "$ppp0_up" \
+    --argjson lan_pppoe_up "$lan_pppoe_up" \
+    --arg lan_pppoe_if "$lan_pppoe_if" \
+    --argjson dhcp_leases "$dhcp_leases" \
+    --arg dnsmasq "$dnsmasq_active" \
+    --arg pppoe_server "$pppoe_srv_active" \
+    --arg wan_pppoe "$wan_pppoe_active" \
+    --arg last_error "$last_err" \
+    '{
+      mode: $mode,
+      user: $user,
+      password: $password,
+      vlan: $vlan,
+      wan_if: $wan_if,
+      lan_if: $lan_if,
+      wan_ip: $wan_ip,
+      lan_ip: $lan_ip,
+      ppp0_up: $ppp0_up,
+      ppp0_ip: $ppp0_ip,
+      lan_dhcp_leases: $dhcp_leases,
+      lan_pppoe_up: $lan_pppoe_up,
+      lan_pppoe_if: $lan_pppoe_if,
+      dnsmasq: $dnsmasq,
+      pppoe_server: $pppoe_server,
+      wan_pppoe_unit: $wan_pppoe,
+      last_error: $last_error
+    }'
+else
+  echo "{\"mode\":\"$mode\",\"error\":\"jq required\"}"
+  exit 1
+fi
+EOF
+
+  cat > "$SCRIPTS_DIR/router-on" <<'EOF'
+#!/bin/bash
+# Врезка: LAN dual-serve (DHCP + PPPoE-server) + WAN DHCP.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+echo "==> router-on"
+echo "    Кабели: ISP→WAN(${WAN_IF}), LAN(${LAN_IF})→WAN роутера."
+echo "    LAN: DHCP + PPPoE-server (accept-any). WAN по умолчанию DHCP."
+echo "    SSH может моргнуть на netplan apply."
+
+if [[ "${NANOPI_YES:-}" != "1" ]]; then
+  read -r -p "Продолжить? [y/N]: " reply || true
+  [[ "${reply:-}" =~ ^[Yy]$ ]] || exit 0
+fi
+
+rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
+"$SCRIPT_DIR/wan-dhcp"
+
+echo "[ok] router-on. Проверь: ip -br addr; ${LAN_IF}=10.10.10.1; wan-status"
+EOF
+
+  cat > "$SCRIPTS_DIR/lab-on" <<'EOF'
+#!/bin/bash
+# Откат в lab: WAN = DHCP в LAN домашнего роутера; dnsmasq/nft/pppoe off.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+echo "==> lab-on: ${WAN_IF} DHCP (домашняя LAN). SSH может моргнуть."
+
+nanopi_stop_wan_pppoe
+systemctl disable --now "$PPPOE_SERVER_UNIT" 2>/dev/null || true
+systemctl disable --now nftables 2>/dev/null || true
+systemctl mask dnsmasq 2>/dev/null || true
+systemctl stop dnsmasq 2>/dev/null || true
+rm -f /etc/dnsmasq.d/lan.conf
+rm -f "$NETPLAN_DIR"/40-router-wan-dhcp.yaml \
+      "$NETPLAN_DIR"/45-router-wan-vlan.yaml \
+      "$NETPLAN_DIR"/50-router-lan.yaml
+
+cat > "$NETPLAN_DIR/30-ethernets-dhcp.yaml" <<YAML
+# NanoPi lab: WAN (${WAN_IF}) в LAN домашнего роутера
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${WAN_IF}:
+      dhcp4: true
+      dhcp6: false
+YAML
+chmod 600 "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
+
+nanopi_set_env_kv WAN_MODE dhcp
+nanopi_set_env_kv PPPOE_VLAN ""
+
+netplan apply
+echo "[ok] lab-on. Проверь: ip -br addr"
 EOF
 
   cat > "$SCRIPTS_DIR/proxy-select" <<'EOF'
@@ -335,21 +802,24 @@ case "$cmd" in
 esac
 EOF
 
-  chmod 755 "$SCRIPTS_DIR/lab-on" "$SCRIPTS_DIR/router-on" "$SCRIPTS_DIR/proxy-select"
+  chmod 755 "$SCRIPTS_DIR"/router-on "$SCRIPTS_DIR"/lab-on \
+    "$SCRIPTS_DIR"/wan-dhcp "$SCRIPTS_DIR"/wan-pppoe \
+    "$SCRIPTS_DIR"/wan-status "$SCRIPTS_DIR"/proxy-select
+  chmod 644 "$SCRIPTS_DIR/common.sh"
 }
 
 # --- пакеты / sysctl / sing-box ---
 
 install_packages() {
   explain \
-    "apt update и минимум пакетов: curl, jq, ca-certificates, nftables, dnsmasq, ppp, openssl.
+    "apt update и минимум пакетов: curl, jq, ca-certificates, nftables, dnsmasq, ppp, pppoe, openssl.
 nftables/dnsmasq сразу выключу — в lab не должны слушать LAN роутера." \
     "Пакеты на месте; dnsmasq masked; nftables не active до router-on."
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y --no-install-recommends \
-    curl jq ca-certificates nftables dnsmasq ppp openssl
+    curl jq ca-certificates nftables dnsmasq ppp pppoe openssl
   systemctl disable --now nftables 2>/dev/null || true
   systemctl mask dnsmasq 2>/dev/null || true
   systemctl stop dnsmasq 2>/dev/null || true
@@ -421,6 +891,9 @@ EOF
 
 write_dotenv() {
   local secret="$1"
+  local wan_mode=${WAN_MODE:-dhcp}
+  local pppoe_user=${PPPOE_USER:-}
+  local pppoe_vlan=${PPPOE_VLAN:-}
   mkdir -p "$OPT_ROOT" "$SB_DIR"
   umask 077
   cat > "$OPT_ENV" <<EOF
@@ -433,6 +906,9 @@ WEBUI_LISTEN=10.10.10.1:80
 WEBUI_GITHUB_REPO=burzilov/nanopi-edge
 WAN_IF=${WAN_IF}
 LAN_IF=${LAN_IF}
+WAN_MODE=${wan_mode}
+PPPOE_USER=${pppoe_user}
+PPPOE_VLAN=${pppoe_vlan}
 EOF
   chmod 600 "$OPT_ENV"
   # убрать старые расположения секрета
@@ -530,7 +1006,7 @@ selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (анти�
           stack: "mixed",
           route_exclude_address: ["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"],
           auto_redirect: true,
-          exclude_interface: [$wan]
+          exclude_interface: [$wan, "ppp0"]
         }
       ],
       outbounds: (
@@ -836,24 +1312,24 @@ print_cutover() {
 
 Схема после врезки:
   ISP → WAN NanoPi (${WAN_IF}) → sing-box + NAT
-      → LAN NanoPi (${LAN_IF}=10.10.10.1) → WAN домашнего роутера
-      → LAN роутера 192.168.1.0/24 → клиенты
+      → LAN NanoPi (${LAN_IF}=10.10.10.1) dual-serve (DHCP + PPPoE-server)
+      → WAN домашнего роутера (DHCP или PPPoE без правок)
+      → LAN роутера → клиенты
 
 0) Запасной путь
    • Запомни текущий SSH (lab).
-   • После врезки SSH: root@10.10.10.1
+   • После врезки SSH / панель: root@10.10.10.1 · http://10.10.10.1/
    • Откат: ISP → WAN роутера; NanoPi WAN (${WAN_IF}) → LAN роутера; затем:
        ${SCRIPTS_DIR}/lab-on
 
 1) Клиенты роутера — убрать «старый» gateway/DNS
    • Gateway = сам роутер (обычно 192.168.1.1), НЕ старый прокси/VM.
    • DNS = роутер (позже можно 10.10.10.1).
-   • Обнови DHCP на ПК, проверь интернет без старого прокси.
 
 2) Роутерный профиль на NanoPi (lab-кабель ещё можно не трогать)
    ${SCRIPTS_DIR}/router-on
-   Ожидание: ${LAN_IF}=10.10.10.1/24; nftables+dnsmasq active; sing-box active.
-   SSH может моргнуть — подожди ~30 с.
+   Ожидание: ${LAN_IF}=10.10.10.1/24; nftables+dnsmasq+nanopi-pppoe-server;
+   WAN_MODE=dhcp. SSH может моргнуть — подожди ~30 с.
 
 3) Кабели (питание NanoPi не выключать)
    1. Вынь lab из WAN NanoPi (${WAN_IF}) ← LAN роутера.
@@ -862,26 +1338,33 @@ print_cutover() {
    4. Подожди 30–60 с.
 
 4) WAN роутера
-   • DHCP-клиент → 10.10.10.100–200, шлюз/DNS 10.10.10.1.
-   • Клиенты: 192.168.1.0/24, gateway = роутер.
+   • DHCP → 10.10.10.100–200, шлюз/DNS 10.10.10.1; или
+   • PPPoE (любые креды) → session к NanoPi, peer 10.10.10.2.
+   • Клиенты: LAN роутера, gateway = роутер.
 
-5) Проверки
-   С ПК: ping 192.168.1.1; ping 10.10.10.1; браузер.
+5) Если ISP на NanoPi — PPPoE (не DHCP)
+   В панели http://10.10.10.1/ или:
+     ${SCRIPTS_DIR}/wan-pppoe <user> <pass> [vlan]
+   Откат на DHCP: ${SCRIPTS_DIR}/wan-dhcp
+   Статус: ${SCRIPTS_DIR}/wan-status | jq .
+
+6) Проверки
+   С ПК: ping роутера; ping 10.10.10.1; браузер → панель.
    С NanoPi (ssh root@10.10.10.1):
      ip -br addr
-     systemctl is-active sing-box nftables dnsmasq
+     systemctl is-active sing-box nftables dnsmasq nanopi-pppoe-server
      curl -4 -sS https://ya.ru/ -o /dev/null -w '%{http_code}\n'
      curl -4 -sS https://api.ipify.org; echo
      ${SCRIPTS_DIR}/proxy-select get
-     ${SCRIPTS_DIR}/proxy-select set <tag>
 
 После успешной установки и тестов этот install-singbox.sh можно удалить.
 Остаётся:
   ${OPT_ENV}
   ${SB_CFG}
-  ${SCRIPTS_DIR}/{router-on,lab-on,proxy-select}
+  ${SCRIPTS_DIR}/
 
 WebUI: отдельно — install-webui.sh (скачивает release с GitHub).
+Lab PPPoE без ISP: см. lab/CHECKLIST.md в репозитории.
 
 EOF
 }
@@ -898,6 +1381,9 @@ Usage: $0 [install|status|test]
 Постоянные команды:
   ${SCRIPTS_DIR}/router-on
   ${SCRIPTS_DIR}/lab-on
+  ${SCRIPTS_DIR}/wan-dhcp
+  ${SCRIPTS_DIR}/wan-pppoe [user] [pass] [vlan]
+  ${SCRIPTS_DIR}/wan-status
   ${SCRIPTS_DIR}/proxy-select list|get|set <tag>
 EOF
   exit 1
@@ -937,8 +1423,8 @@ EOF
 
   step 3 "Каталог ${OPT_ROOT}"
   explain \
-    "Создам ${OPT_ROOT} и постоянные scripts/ (router-on, lab-on, proxy-select)." \
-    "${SCRIPTS_DIR}/router-on, lab-on, proxy-select существуют"
+    "Создам ${OPT_ROOT} и постоянные scripts/ (router-on, wan-*, lab-on, proxy-select)." \
+    "${SCRIPTS_DIR}/router-on, wan-*, lab-on, proxy-select существуют"
   mkdir -p "$OPT_ROOT"
   write_ops_scripts
 

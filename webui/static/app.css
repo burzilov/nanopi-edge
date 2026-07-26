@@ -84,7 +84,30 @@ h1 { margin-top: 0; font-size: 1.4rem; }
 }
 .pill.ok { background: #c8e6d0; }
 .pill.bad { background: #f0c8c8; }
+.pill.warn { background: #f5e0b8; }
+.pill.muted { background: #e8e4dc; color: var(--muted); }
 .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin-top: 0.75rem; }
+.card-title { margin: 0 0 0.75rem; font-size: 1.05rem; }
+.wan-card { margin-top: 1rem; }
+.wan-form label { display: block; font-size: 0.9rem; color: var(--muted); }
+.wan-form input, .wan-form select {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem;
+  background: #fff;
+  color: var(--fg);
+  font: inherit;
+}
+.grow { flex: 1 1 10rem; }
+.vlan-field { flex: 0 0 6.5rem; }
+.pass-wrap { display: flex; gap: 0.35rem; align-items: stretch; margin-top: 0.35rem; }
+.pass-wrap input { margin-top: 0; flex: 1; }
+.pass-toggle { padding: 0.35rem 0.55rem; min-width: 2.4rem; }
+.wan-actions { margin-top: 1rem; }
+.wan-last-err { font-size: 0.85rem; }
 button {
   background: var(--accent);
   color: #fff;

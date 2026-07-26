@@ -7,6 +7,7 @@
   <title>NanoPi edge</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/wan.js" defer></script>
 </head>
 <body>
   {{template "nav" .}}
@@ -19,8 +20,14 @@
            hx-swap="innerHTML">
         Загрузка…
       </div>
+      <div id="wan"
+           hx-get="/partials/wan"
+           hx-trigger="load, every 8s"
+           hx-swap="innerHTML">
+      </div>
     </section>
   </main>
 </body>
 </html>
 {{end}}
+

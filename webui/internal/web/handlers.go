@@ -19,6 +19,7 @@ import (
 	"nanopi-webui/internal/logfmt"
 	"nanopi-webui/internal/sysd"
 	"nanopi-webui/internal/update"
+	"nanopi-webui/internal/wan"
 )
 
 type Server struct {
@@ -36,6 +37,8 @@ type statusData struct {
 	Uptime  string
 	Message string
 	Error   string
+	WAN     wan.Status
+	WANErr  string
 }
 
 func (s *Server) Routes() http.Handler {
@@ -43,6 +46,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(s.StaticFS)))
 	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /partials/status", s.handleStatusPartial)
+	mux.HandleFunc("GET /partials/wan", s.handleWanPartial)
 	mux.HandleFunc("POST /proxy", s.handleProxySet)
 	mux.HandleFunc("POST /sing-box/restart", s.handleRestart)
 	mux.HandleFunc("GET /logs", s.handleLogs)
@@ -55,6 +59,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/version", s.handleAPIVersion)
 	mux.HandleFunc("GET /api/updates/check", s.handleAPIUpdatesCheck)
 	mux.HandleFunc("POST /api/updates/apply", s.handleAPIUpdatesApply)
+	mux.HandleFunc("GET /api/wan", s.handleAPIWanGet)
+	mux.HandleFunc("POST /api/wan", s.handleAPIWanPost)
+	mux.HandleFunc("POST /wan", s.handleWanForm)
 	return mux
 }
 
@@ -84,6 +91,11 @@ func (s *Server) status() statusData {
 		Active: ruActive(sysd.IsActive(s.Env.SingboxUnit)),
 		Uptime: sysd.ProcessUptime(s.Env.SingboxUnit),
 	}
+	if st, err := wan.GetStatus(); err != nil {
+		d.WANErr = err.Error()
+	} else {
+		d.WAN = st
+	}
 	_ = s.Clash.WaitReady(5, 200*time.Millisecond)
 	g, err := s.Clash.GetProxy("proxy")
 	if err != nil {
@@ -98,6 +110,10 @@ func (s *Server) status() statusData {
 
 func (s *Server) handleStatusPartial(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "partials/status", s.status())
+}
+
+func (s *Server) handleWanPartial(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "partials/wan", s.status())
 }
 
 func (s *Server) handleProxySet(w http.ResponseWriter, r *http.Request) {
@@ -396,6 +412,60 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (s *Server) handleAPIWanGet(w http.ResponseWriter, r *http.Request) {
+	st, err := wan.GetStatus()
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleAPIWanPost(w http.ResponseWriter, r *http.Request) {
+	var req wan.ApplyReq
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if err := wan.Apply(req); err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	st, err := wan.GetStatus()
+	if err != nil {
+		s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "warning": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) handleWanForm(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	req := wan.ApplyReq{
+		Mode:     r.FormValue("mode"),
+		User:     r.FormValue("user"),
+		Password: r.FormValue("password"),
+		VLAN:     r.FormValue("vlan"),
+	}
+	d := s.status()
+	if err := wan.Apply(req); err != nil {
+		d.Error = err.Error()
+		s.render(w, "partials/wan", d)
+		return
+	}
+	d = s.status()
+	switch strings.ToLower(req.Mode) {
+	case "pppoe":
+		d.Message = "WAN: PPPoE применён (жди UP ppp0)"
+	default:
+		d.Message = "WAN: откат на DHCP"
+	}
+	s.render(w, "partials/wan", d)
 }
 
 func (s *Server) handleAPIVersion(w http.ResponseWriter, r *http.Request) {

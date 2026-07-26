@@ -1,0 +1,66 @@
+{{define "partials/wan"}}
+<div class="card wan-card">
+  <h2 class="card-title">WAN к ISP</h2>
+  {{if .WANErr}}<p class="err">{{.WANErr}}</p>{{end}}
+  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <p>
+    <span class="label">режим</span>
+    <span class="pill {{if eq .WAN.Mode "pppoe"}}warn{{else}}ok{{end}}">{{if .WAN.Mode}}{{.WAN.Mode}}{{else}}—{{end}}</span>
+    {{if eq .WAN.Mode "pppoe"}}
+      <span class="label">ppp0</span>
+      <span class="pill {{if .WAN.PPP0Up}}ok{{else}}bad{{end}}">{{if .WAN.PPP0Up}}up {{.WAN.PPP0IP}}{{else}}down{{end}}</span>
+    {{else}}
+      <span class="label">WAN IP</span> <code>{{if .WAN.WanIP}}{{.WAN.WanIP}}{{else}}—{{end}}</code>
+    {{end}}
+  </p>
+  <p>
+    <span class="label">LAN</span>
+    <span class="pill {{if eq .WAN.Dnsmasq "active"}}ok{{else}}bad{{end}}">DHCP {{.WAN.LanDHCPLeases}}</span>
+    <span class="pill {{if .WAN.LanPPPoEUp}}ok{{else}}muted{{end}}">PPPoE {{if .WAN.LanPPPoEUp}}up{{else}}—{{end}}</span>
+    <span class="hint">dual-serve · {{if .WAN.LanIP}}{{.WAN.LanIP}}{{else}}10.10.10.1{{end}}</span>
+  </p>
+  {{if .WAN.LastError}}<p class="err wan-last-err">{{.WAN.LastError}}</p>{{end}}
+
+  <form class="wan-form"
+        hx-post="/wan"
+        hx-target="#wan"
+        hx-swap="innerHTML"
+        onsubmit="return window.nanopiConfirmWan(this)">
+    <div class="row">
+      <label>Режим
+        <select name="mode" id="wan-mode" onchange="window.nanopiToggleWanFields(this)">
+          <option value="dhcp" {{if ne .WAN.Mode "pppoe"}}selected{{end}}>DHCP</option>
+          <option value="pppoe" {{if eq .WAN.Mode "pppoe"}}selected{{end}}>PPPoE</option>
+        </select>
+      </label>
+    </div>
+    <div id="wan-pppoe-fields" class="wan-pppoe-fields" {{if ne .WAN.Mode "pppoe"}}hidden{{end}}>
+      <div class="row">
+        <label class="grow">Логин
+          <input type="text" name="user" value="{{.WAN.User}}" autocomplete="username">
+        </label>
+        <label class="grow">Пароль
+          <span class="pass-wrap">
+            <input type="password" name="password" id="wan-pass" value="{{.WAN.Password}}" autocomplete="current-password">
+            <button type="button" class="secondary pass-toggle" onclick="window.nanopiTogglePass()" aria-label="показать пароль">показать</button>
+          </span>
+        </label>
+        <label class="vlan-field">VLAN
+          <input type="number" name="vlan" min="1" max="4094" placeholder="нет" value="{{.WAN.VLAN}}">
+        </label>
+      </div>
+      <p class="hint">Пустой пароль при «Применить» сохранится пустым. VLAN — только если требует провайдер.</p>
+    </div>
+    <div class="row wan-actions">
+      <button type="submit">Применить</button>
+      <button type="button" class="secondary"
+              hx-post="/wan"
+              hx-vals='{"mode":"dhcp"}'
+              hx-target="#wan"
+              hx-swap="innerHTML"
+              hx-confirm="Откатить WAN на DHCP?">Откат на DHCP</button>
+    </div>
+  </form>
+</div>
+{{end}}
