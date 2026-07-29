@@ -1,0 +1,118 @@
+{{define "ports"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проброс портов — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="ports-main">
+    {{template "ports_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "ports_inner"}}
+<section>
+  <h1>Проброс портов</h1>
+  <p class="hint">DNAT с WAN NanoPi (белый IP) на хост в LAN. Правила только на входящих с
+    WAN/ppp0 — WebUI на <code>10.10.10.1:80</code> не перехватывается.
+    Для NPM: <code>80</code> и <code>443</code> → IP виртуалки (или WAN роутера, если проброс ещё на нём).</p>
+  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
+  {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
+
+  <div class="card ports-card">
+    <h2 class="card-title">Правила</h2>
+    {{if .Rules}}
+    <div class="ports-table-wrap">
+      <table class="ports-table">
+        <thead>
+          <tr>
+            <th>Вкл</th>
+            <th>Протокол</th>
+            <th>WAN</th>
+            <th>Куда</th>
+            <th>Комментарий</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Rules}}
+          <tr class="{{if not .Enabled}}ports-off{{end}}">
+            <td>
+              <form class="inline"
+                    hx-post="/ports/toggle"
+                    hx-target="#ports-main"
+                    hx-swap="innerHTML">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <input type="hidden" name="enabled" value="{{if .Enabled}}0{{else}}1{{end}}">
+                <button type="submit" class="secondary ports-toggle" title="Включить/выключить">
+                  {{if .Enabled}}✓{{else}}—{{end}}
+                </button>
+              </form>
+            </td>
+            <td><code>{{.Proto}}</code></td>
+            <td><code>{{.WanPort}}</code></td>
+            <td><code>{{.DestIP}}:{{.DestPort}}</code></td>
+            <td class="ports-comment">{{.Comment}}</td>
+            <td>
+              <form class="inline"
+                    hx-post="/ports/delete"
+                    hx-target="#ports-main"
+                    hx-swap="innerHTML"
+                    hx-confirm="Удалить проброс {{.Proto}} {{.WanPort}} → {{.DestIP}}:{{.DestPort}}?">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <button type="submit" class="danger">Удалить</button>
+              </form>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="hint">Пока нет правил.</p>
+    {{end}}
+  </div>
+
+  <div class="card ports-card">
+    <h2 class="card-title">Добавить</h2>
+    <form class="ports-form"
+          hx-post="/ports/add"
+          hx-target="#ports-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">Протокол
+          <select name="proto">
+            <option value="tcp" selected>tcp</option>
+            <option value="udp">udp</option>
+            <option value="both">tcp+udp</option>
+          </select>
+        </label>
+        <label class="ports-port">WAN-порт
+          <input name="wan_port" type="number" min="1" max="65535" required placeholder="443">
+        </label>
+        <label class="grow">IP назначения
+          <input name="dest_ip" type="text" required placeholder="10.10.10.50" pattern="^[0-9.]+$">
+        </label>
+        <label class="ports-port">Порт
+          <input name="dest_port" type="number" min="1" max="65535" required placeholder="443">
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow">Комментарий
+          <input name="comment" type="text" maxlength="120" placeholder="nginx proxy manager">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Добавить и применить</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</section>
+{{end}}

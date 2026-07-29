@@ -182,6 +182,17 @@ nanopi_set_env_kv() {
 
 nanopi_write_nft() {
   local wan="$1"
+  mkdir -p /etc/nftables.d
+  if [[ ! -f /etc/nftables.d/nanopi-port-forwards.nft ]]; then
+    cat > /etc/nftables.d/nanopi-port-forwards.nft <<'FWD'
+# Managed by nanopi-webui — port forwards (do not edit)
+table inet nanopi_portforward {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+}
+FWD
+  fi
   cat > /etc/nftables.conf <<NFT
 #!/usr/sbin/nft -f
 # Минимальный NAT на краю + MSS clamp для PPPoE
@@ -201,6 +212,8 @@ table inet filter {
 		tcp flags syn tcp option maxseg size set 1452
 	}
 }
+
+include "/etc/nftables.d/nanopi-port-forwards.nft"
 NFT
 }
 

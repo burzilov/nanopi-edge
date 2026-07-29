@@ -237,3 +237,42 @@ code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 4px; }
 }
 .update-overlay-card p { margin: 0.35rem 0; }
 
+.ports-card { margin-top: 1rem; }
+.ports-table-wrap { overflow-x: auto; }
+.ports-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+.ports-table th,
+.ports-table td {
+  text-align: left;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.ports-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+.ports-off { opacity: 0.55; }
+.ports-comment { color: var(--muted); max-width: 12rem; word-break: break-word; }
+.ports-form label { display: block; font-size: 0.9rem; color: var(--muted); }
+.ports-form input,
+.ports-form select {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem;
+  background: #fff;
+  color: var(--fg);
+  font: inherit;
+}
+.ports-port { flex: 0 0 7rem; }
+.ports-add-actions { display: flex; align-items: flex-end; }
+.ports-toggle { min-width: 2.4rem; padding: 0.3rem 0.45rem; }
+form.inline { display: inline; margin: 0; }
+

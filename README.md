@@ -23,7 +23,7 @@ ISP (DHCP или PPPoE ± VLAN)
 - WAN к ISP: **DHCP** или **PPPoE** (логин/пароль, опциональный VLAN) — CLI и WebUI
 - LAN к роутеру: одновременно DHCP и PPPoE-server (accept-any) — роутер может
   оставаться в своём WAN-режиме
-- Лёгкая веб-панель (Go + HTMX): статус, WAN, логи, proxy, домены, конфиг
+- Лёгкая веб-панель (Go + HTMX): статус, WAN, логи, proxy, домены, проброс портов, конфиг
 - Установщики: один файл `install-singbox.sh` (на плате пишет `/opt/nanopi-edge/scripts/`)
 
 **Не цель проекта:** тяжёлый firewall, WireGuard как основной транспорт,

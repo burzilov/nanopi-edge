@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"nanopi-webui/internal/config"
 	"nanopi-webui/internal/domains"
 	"nanopi-webui/internal/logfmt"
+	"nanopi-webui/internal/portfwd"
 	"nanopi-webui/internal/sysd"
 	"nanopi-webui/internal/update"
 	"nanopi-webui/internal/wan"
@@ -53,6 +55,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /logs/stream", s.handleLogsStream)
 	mux.HandleFunc("GET /domains", s.handleDomainsPage)
 	mux.HandleFunc("POST /domains/save-restart", s.handleDomainsSaveRestart)
+	mux.HandleFunc("GET /ports", s.handlePortsPage)
+	mux.HandleFunc("POST /ports/add", s.handlePortsAdd)
+	mux.HandleFunc("POST /ports/delete", s.handlePortsDelete)
+	mux.HandleFunc("POST /ports/toggle", s.handlePortsToggle)
+	mux.HandleFunc("GET /api/ports", s.handleAPIPortsGet)
 	mux.HandleFunc("GET /config", s.handleConfigPage)
 	mux.HandleFunc("POST /config/check", s.handleConfigCheck)
 	mux.HandleFunc("POST /config/save-restart", s.handleConfigSaveRestart)
@@ -295,6 +302,92 @@ func (s *Server) handleDomainsSaveRestart(w http.ResponseWriter, r *http.Request
 	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
 	data["Message"] = "Домены применены в config.json, sing-box перезапущен"
 	s.render(w, "domains_inner", data)
+}
+
+type portsPageData struct {
+	Rules   []portfwd.Rule
+	Message string
+	Error   string
+}
+
+func (s *Server) portsData(msg, errMsg string) portsPageData {
+	d := portsPageData{Message: msg, Error: errMsg, Rules: []portfwd.Rule{}}
+	st, err := portfwd.Load()
+	if err != nil {
+		if d.Error == "" {
+			d.Error = err.Error()
+		}
+		return d
+	}
+	d.Rules = st.Rules
+	return d
+}
+
+func (s *Server) handlePortsPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "ports", s.portsData("", ""))
+}
+
+func (s *Server) handlePortsAdd(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	wanPort, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("wan_port")))
+	destPort, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("dest_port")))
+	rule := portfwd.Rule{
+		Proto:    r.FormValue("proto"),
+		WanPort:  wanPort,
+		DestIP:   r.FormValue("dest_ip"),
+		DestPort: destPort,
+		Comment:  r.FormValue("comment"),
+	}
+	_, err := portfwd.Add(rule)
+	if err != nil {
+		d := s.portsData("", err.Error())
+		s.render(w, "ports_inner", d)
+		return
+	}
+	s.render(w, "ports_inner", s.portsData("Правило добавлено, nftables обновлён", ""))
+}
+
+func (s *Server) handlePortsDelete(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	_, err := portfwd.Delete(r.FormValue("id"))
+	if err != nil {
+		s.render(w, "ports_inner", s.portsData("", err.Error()))
+		return
+	}
+	s.render(w, "ports_inner", s.portsData("Правило удалено", ""))
+}
+
+func (s *Server) handlePortsToggle(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	enabled := r.FormValue("enabled") == "1"
+	_, err := portfwd.SetEnabled(r.FormValue("id"), enabled)
+	if err != nil {
+		s.render(w, "ports_inner", s.portsData("", err.Error()))
+		return
+	}
+	msg := "Правило выключено"
+	if enabled {
+		msg = "Правило включено"
+	}
+	s.render(w, "ports_inner", s.portsData(msg, ""))
+}
+
+func (s *Server) handleAPIPortsGet(w http.ResponseWriter, r *http.Request) {
+	st, err := portfwd.Load()
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
