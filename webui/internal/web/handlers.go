@@ -562,9 +562,17 @@ func (s *Server) handleWanForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPIVersion(w http.ResponseWriter, r *http.Request) {
+	edgeVer := s.Env.EdgeVersion
+	if envPath := os.Getenv("WEBUI_ENV"); envPath != "" {
+		if env, err := config.Load(envPath); err == nil && env.EdgeVersion != "" {
+			edgeVer = env.EdgeVersion
+			s.Env.EdgeVersion = env.EdgeVersion
+		}
+	}
 	s.writeJSON(w, http.StatusOK, map[string]string{
-		"version": s.Version,
-		"repo":    s.Env.GithubRepo,
+		"version":      s.Version,
+		"edge_version": edgeVer,
+		"repo":         s.Env.GithubRepo,
 	})
 }
 
@@ -575,7 +583,19 @@ func (s *Server) handleAPIUpdatesCheck(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	res, err := update.Check(s.Env.GithubRepo, s.Version)
+	edgeVer := s.Env.EdgeVersion
+	if envPath := os.Getenv("WEBUI_ENV"); envPath != "" {
+		if env, err := config.Load(envPath); err == nil {
+			if env.EdgeVersion != "" {
+				edgeVer = env.EdgeVersion
+				s.Env.EdgeVersion = env.EdgeVersion
+			}
+			if env.InstallEdge != "" {
+				s.Env.InstallEdge = env.InstallEdge
+			}
+		}
+	}
+	res, err := update.Check(s.Env.GithubRepo, s.Version, edgeVer)
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -600,21 +620,27 @@ func (s *Server) handleAPIUpdatesApply(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// Сразу отвечаем: скрипт перезапустит сервис и оборвёт соединение.
+	// Сразу отвечаем: edge, затем webui (рестарт оборвёт соединение).
 	s.writeJSON(w, http.StatusAccepted, map[string]any{
 		"ok":         true,
 		"restarting": true,
 		"version":    req.Version,
-		"message":    "Запускаю install-webui.sh; панель перезапустится",
+		"message":    "Фон: install-singbox.sh, затем install-webui.sh",
 	})
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+	repo := s.Env.GithubRepo
+	edgeScript := s.Env.InstallEdge
+	webuiScript := s.Env.InstallWebUI
+	ver := req.Version
 	go func() {
-		time.Sleep(800 * time.Millisecond)
-		if err := update.Apply(s.Env.InstallWebUI, s.Env.GithubRepo, req.Version); err != nil {
-			log.Printf("webui update apply failed: %v", err)
+		time.Sleep(500 * time.Millisecond)
+		if err := update.ApplyAll(repo, ver, edgeScript, webuiScript); err != nil {
+			log.Printf("update apply-all failed: %v", err)
+			return
 		}
+		log.Printf("update apply-all ok: %s", ver)
 	}()
 }
 

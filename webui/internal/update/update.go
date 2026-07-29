@@ -7,20 +7,41 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const AssetName = "nanopi-webui-linux-arm64.tar.gz"
+const (
+	WebUIArchiveAsset = "nanopi-webui-linux-arm64.tar.gz"
+	WebUIScriptAsset  = "install-webui.sh"
+	EdgeScriptAsset   = "install-singbox.sh"
+)
 
-type CheckResult struct {
+// Legacy name used in older messages / checks for the binary archive.
+const WebUIAssetName = WebUIArchiveAsset
+
+type ComponentStatus struct {
 	Current         string `json:"current"`
 	Latest          string `json:"latest"`
 	UpdateAvailable bool   `json:"update_available"`
+	AssetOK         bool   `json:"asset_ok"`
 	Name            string `json:"name,omitempty"`
 	Body            string `json:"body,omitempty"`
 	HTMLURL         string `json:"html_url,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+type CheckResult struct {
+	Repo            string          `json:"repo"`
+	Latest          string          `json:"latest"`
+	UpdateAvailable bool            `json:"update_available"`
+	Name            string          `json:"name,omitempty"`
+	Body            string          `json:"body,omitempty"`
+	HTMLURL         string          `json:"html_url,omitempty"`
+	WebUI           ComponentStatus `json:"webui"`
+	Edge            ComponentStatus `json:"edge"`
 }
 
 type ghRelease struct {
@@ -63,15 +84,24 @@ func CompareSemver(a, b string) int {
 	return 0
 }
 
-func Check(repo, current string) (CheckResult, error) {
-	out := CheckResult{Current: current}
+func fetchLatest(repo string) (ghRelease, error) {
+	return fetchRelease(repo, "")
+}
+
+func fetchRelease(repo, tag string) (ghRelease, error) {
+	var rel ghRelease
 	if repo == "" {
-		return out, fmt.Errorf("WEBUI_GITHUB_REPO пуст")
+		return rel, fmt.Errorf("WEBUI_GITHUB_REPO пуст")
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	var url string
+	if tag == "" {
+		url = fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	} else {
+		url = fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, tag)
+	}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return out, err
+		return rel, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -80,59 +110,210 @@ func Check(repo, current string) (CheckResult, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return out, err
+		return rel, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return out, err
+		return rel, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("GitHub API %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return rel, fmt.Errorf("GitHub API %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	var rel ghRelease
 	if err := json.Unmarshal(body, &rel); err != nil {
-		return out, err
+		return rel, err
 	}
 	if rel.TagName == "" {
-		return out, fmt.Errorf("в latest release нет tag_name")
+		return rel, fmt.Errorf("в release нет tag_name")
 	}
-	hasAsset := false
+	return rel, nil
+}
+
+func assetURL(rel ghRelease, name string) string {
 	for _, a := range rel.Assets {
-		if a.Name == AssetName {
-			hasAsset = true
-			break
+		if a.Name == name {
+			return a.BrowserDownloadURL
 		}
 	}
-	if !hasAsset {
-		return out, fmt.Errorf("в release %s нет ассета %s", rel.TagName, AssetName)
+	return ""
+}
+
+func Check(repo, webuiCurrent, edgeCurrent string) (CheckResult, error) {
+	out := CheckResult{
+		Repo:  repo,
+		WebUI: ComponentStatus{Current: webuiCurrent},
+		Edge:  ComponentStatus{Current: edgeCurrent},
 	}
+	if edgeCurrent == "" {
+		out.Edge.Current = "unknown"
+	}
+	rel, err := fetchLatest(repo)
+	if err != nil {
+		return out, err
+	}
+
 	out.Latest = rel.TagName
 	out.Name = rel.Name
 	out.Body = rel.Body
 	out.HTMLURL = rel.HTMLURL
-	out.UpdateAvailable = CompareSemver(current, rel.TagName) < 0
+
+	out.WebUI.Latest = rel.TagName
+	out.WebUI.Name = rel.Name
+	out.WebUI.Body = rel.Body
+	out.WebUI.HTMLURL = rel.HTMLURL
+	hasScript := assetURL(rel, WebUIScriptAsset) != ""
+	hasArchive := assetURL(rel, WebUIArchiveAsset) != ""
+	out.WebUI.AssetOK = hasScript && hasArchive
+	switch {
+	case !hasScript:
+		out.WebUI.Error = fmt.Sprintf("нет ассета %s", WebUIScriptAsset)
+	case !hasArchive:
+		out.WebUI.Error = fmt.Sprintf("нет ассета %s", WebUIArchiveAsset)
+	default:
+		out.WebUI.UpdateAvailable = CompareSemver(webuiCurrent, rel.TagName) < 0
+	}
+
+	out.Edge.Latest = rel.TagName
+	out.Edge.Name = rel.Name
+	out.Edge.Body = rel.Body
+	out.Edge.HTMLURL = rel.HTMLURL
+	out.Edge.AssetOK = assetURL(rel, EdgeScriptAsset) != ""
+	if !out.Edge.AssetOK {
+		out.Edge.Error = fmt.Sprintf("нет ассета %s", EdgeScriptAsset)
+	} else if edgeCurrent == "" || edgeCurrent == "unknown" {
+		out.Edge.UpdateAvailable = true
+	} else {
+		out.Edge.UpdateAvailable = CompareSemver(edgeCurrent, rel.TagName) < 0
+	}
+
+	out.UpdateAvailable = out.WebUI.UpdateAvailable || out.Edge.UpdateAvailable
 	return out, nil
 }
 
-// Apply запускает install-webui.sh --noninteractive для указанного tag (или latest если version пуст).
-func Apply(scriptPath, repo, version string) error {
-	if scriptPath == "" {
-		return fmt.Errorf("путь к install-webui.sh пуст")
+func downloadFile(url, dest string) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
 	}
-	if _, err := os.Stat(scriptPath); err != nil {
-		return fmt.Errorf("нет скрипта %s: %w", scriptPath, err)
+	req.Header.Set("User-Agent", "nanopi-webui")
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
 	}
-	if repo == "" {
-		return fmt.Errorf("WEBUI_GITHUB_REPO пуст")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("download %s: %s", resp.Status, strings.TrimSpace(string(b)))
 	}
-	cmd := exec.Command("/bin/bash", scriptPath, "--noninteractive")
-	cmd.Env = append(os.Environ(),
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".nanopi-dl-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := io.Copy(tmp, io.LimitReader(resp.Body, 32<<20)); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(0o755); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, dest)
+}
+
+func downloadReleaseAsset(repo, version, assetName, dest string) error {
+	rel, err := fetchRelease(repo, version)
+	if err != nil {
+		return err
+	}
+	dl := assetURL(rel, assetName)
+	if dl == "" {
+		return fmt.Errorf("в release %s нет ассета %s", version, assetName)
+	}
+	return downloadFile(dl, dest)
+}
+
+func runBash(script string, env ...string) error {
+	cmd := exec.Command("/bin/bash", script)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func runBashArgs(script string, args []string, env ...string) error {
+	cmd := exec.Command("/bin/bash", append([]string{script}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// ApplyEdge скачивает install-singbox.sh из release и запускает с NANOPI_YES=1.
+func ApplyEdge(repo, version, destScript string) error {
+	if destScript == "" {
+		destScript = "/opt/nanopi-edge/install-singbox.sh"
+	}
+	if version == "" {
+		return fmt.Errorf("нужен version (tag)")
+	}
+	if err := downloadReleaseAsset(repo, version, EdgeScriptAsset, destScript); err != nil {
+		return err
+	}
+	return runBash(destScript,
+		"NANOPI_YES=1",
+		"EDGE_VERSION="+version,
+		"WEBUI_GITHUB_REPO="+repo,
+		"DEBIAN_FRONTEND=noninteractive",
+	)
+}
+
+// ApplyWebUI скачивает install-webui.sh из release и запускает --noninteractive.
+func ApplyWebUI(destScript, repo, version string) error {
+	if destScript == "" {
+		destScript = "/opt/nanopi-edge/install-webui.sh"
+	}
+	if version == "" {
+		return fmt.Errorf("нужен version (tag)")
+	}
+	if err := downloadReleaseAsset(repo, version, WebUIScriptAsset, destScript); err != nil {
+		return err
+	}
+	return runBashArgs(destScript, []string{"--noninteractive"},
 		"WEBUI_GITHUB_REPO="+repo,
 		"WEBUI_VERSION="+version,
 		"DEBIAN_FRONTEND=noninteractive",
 	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+}
+
+// Deprecated: use ApplyWebUI.
+func Apply(scriptPath, repo, version string) error {
+	return ApplyWebUI(scriptPath, repo, version)
+}
+
+// ApplyAll: качает оба скрипта, сначала edge, затем webui (рестарт панели последним).
+func ApplyAll(repo, version, edgeScript, webuiScript string) error {
+	if repo == "" {
+		return fmt.Errorf("WEBUI_GITHUB_REPO пуст")
+	}
+	if version == "" {
+		return fmt.Errorf("нужен version (tag)")
+	}
+	if err := ApplyEdge(repo, version, edgeScript); err != nil {
+		return fmt.Errorf("edge: %w", err)
+	}
+	if err := ApplyWebUI(webuiScript, repo, version); err != nil {
+		return fmt.Errorf("webui: %w", err)
+	}
+	return nil
 }

@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-const DefaultInstallWebUI = "/opt/nanopi-edge/install-webui.sh"
+const (
+	DefaultInstallWebUI = "/opt/nanopi-edge/install-webui.sh"
+	DefaultInstallEdge  = "/opt/nanopi-edge/install-singbox.sh"
+)
 
 type Env struct {
 	ClashAPI      string
@@ -16,6 +19,8 @@ type Env struct {
 	Listen        string
 	GithubRepo    string
 	InstallWebUI  string
+	InstallEdge   string
+	EdgeVersion   string
 }
 
 func Load(path string) (Env, error) {
@@ -25,6 +30,7 @@ func Load(path string) (Env, error) {
 		SingboxUnit:   "sing-box",
 		Listen:        "10.10.10.1:80",
 		InstallWebUI:  DefaultInstallWebUI,
+		InstallEdge:   DefaultInstallEdge,
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -60,10 +66,17 @@ func Load(path string) (Env, error) {
 			e.GithubRepo = v
 		case "WEBUI_INSTALL_SCRIPT":
 			e.InstallWebUI = v
+		case "EDGE_INSTALL_SCRIPT":
+			e.InstallEdge = v
+		case "EDGE_VERSION":
+			e.EdgeVersion = v
 		}
 	}
 	if e.InstallWebUI == "" {
 		e.InstallWebUI = DefaultInstallWebUI
+	}
+	if e.InstallEdge == "" {
+		e.InstallEdge = DefaultInstallEdge
 	}
 	return e, sc.Err()
 }

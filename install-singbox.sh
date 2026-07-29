@@ -1,17 +1,16 @@
 #!/bin/bash
-# install.sh — одноразовая установка NanoPi R3S LTS как edge (схема B).
+# install-singbox.sh — установка и безопасное обновление NanoPi R3S LTS (edge).
 #
-# Копируешь ТОЛЬКО этот файл на свежую Armbian (root):
-#   bash install.sh           # установка + тесты
-#   bash install.sh status    # диагностика (до удаления)
-#   bash install.sh test      # приёмочные тесты (до удаления)
+#   bash install-singbox.sh           # fresh или upgrade (авто)
+#   bash install-singbox.sh status
+#   bash install-singbox.sh test
+#   NANOPI_YES=1 bash install-singbox.sh   # без вопросов (для WebUI / cron)
 #
-# После успешной установки install.sh можно удалить.
-# Повседневное управление — скрипты в /opt/nanopi-edge/scripts/:
+# Повторный запуск не гасит router-режим (dnsmasq/nftables) и по умолчанию
+# не пересобирает /etc/sing-box/config.json.
+#
+# Повседневное управление — /opt/nanopi-edge/scripts/:
 #   router-on | lab-on | wan-dhcp | wan-pppoe | wan-status | proxy-select
-#
-# .env и webui живут в /opt/nanopi-edge/.
-# Боевой конфиг sing-box: /etc/sing-box/config.json (единый файл).
 #
 set -euo pipefail
 
@@ -24,10 +23,17 @@ SB_DIR=/etc/sing-box
 SB_CFG="$SB_DIR/config.json"
 UNIT_DST=/etc/systemd/system/sing-box.service
 NETPLAN_DIR=/etc/netplan
+SELF_INSTALL="$OPT_ROOT/install-singbox.sh"
 
 WAN_IF=end0
 LAN_IF=enp1s0
 CLASH_SECRET_VALUE=""
+# fresh | upgrade — выставляет detect_install_mode
+INSTALL_MODE=fresh
+# 1 если dnsmasq/nftables уже в router-режиме — packages их не трогает
+ROUTER_LIVE=0
+# 1 если на этом прогоне пересобрали config.json
+CONFIG_REBUILT=0
 
 # --- вывод ---
 
@@ -59,6 +65,10 @@ explain() {
 ask() {
   local prompt="$1" default="${2:-}"
   local reply
+  if [[ "${NANOPI_YES:-}" == "1" ]]; then
+    echo "${default}"
+    return 0
+  fi
   if [[ -n "$default" ]]; then
     read -r -p "$prompt [$default]: " reply || true
     echo "${reply:-$default}"
@@ -71,13 +81,17 @@ ask() {
 yesno() {
   local prompt="$1" default="${2:-n}"
   local reply hint
+  if [[ "${NANOPI_YES:-}" == "1" ]]; then
+    [[ "$default" =~ ^[Yy]$ ]]
+    return $?
+  fi
   if [[ "$default" =~ ^[Yy]$ ]]; then hint="Y/n"; else hint="y/N"; fi
   read -r -p "$prompt [$hint]: " reply || true
   reply=${reply:-$default}
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
-need_root() { [[ $(id -u) -eq 0 ]] || die "нужен root (sudo -i / sudo bash install.sh)"; }
+need_root() { [[ $(id -u) -eq 0 ]] || die "нужен root (sudo -i / sudo bash install-singbox.sh)"; }
 
 load_env() {
   [[ -f "$OPT_ENV" ]] || return 0
@@ -85,6 +99,56 @@ load_env() {
   source "$OPT_ENV"
   WAN_IF=${WAN_IF:-end0}
   LAN_IF=${LAN_IF:-enp1s0}
+}
+
+is_installed() {
+  [[ -f "$OPT_ENV" && -f "$SB_CFG" && -x "$SCRIPTS_DIR/router-on" ]]
+}
+
+# Router-режим: не гасить dnsmasq/nftables при apt-шаге.
+detect_router_live() {
+  ROUTER_LIVE=0
+  if systemctl is-active --quiet nftables 2>/dev/null; then
+    ROUTER_LIVE=1
+    return 0
+  fi
+  if systemctl is-active --quiet dnsmasq 2>/dev/null; then
+    ROUTER_LIVE=1
+    return 0
+  fi
+  if systemctl is-active --quiet nanopi-pppoe-server 2>/dev/null; then
+    ROUTER_LIVE=1
+    return 0
+  fi
+  if [[ -n "${LAN_IF:-}" ]] && ip -4 -br addr show "$LAN_IF" 2>/dev/null | grep -q '10\.10\.10\.1'; then
+    ROUTER_LIVE=1
+    return 0
+  fi
+  return 0
+}
+
+detect_install_mode() {
+  if is_installed; then
+    INSTALL_MODE=upgrade
+  else
+    INSTALL_MODE=fresh
+  fi
+}
+
+# Выставить/обновить один ключ в .env, остальные строки сохранить.
+env_set_kv() {
+  local key="$1" val="$2"
+  local tmp
+  tmp=$(mktemp)
+  if [[ -f "$OPT_ENV" ]]; then
+    grep -v "^${key}=" "$OPT_ENV" >"$tmp" || true
+  else
+    : >"$tmp"
+  fi
+  val=${val//$'\n'/}
+  printf '%s=%s\n' "$key" "$val" >>"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$OPT_ENV"
 }
 
 # --- инвентарь ---
@@ -824,15 +888,28 @@ EOF
 # --- пакеты / sysctl / sing-box ---
 
 install_packages() {
-  explain \
-    "apt update и минимум пакетов: curl, jq, ca-certificates, nftables, dnsmasq, ppp, pppoe, openssl.
+  detect_router_live
+  if [[ "$ROUTER_LIVE" -eq 1 ]]; then
+    explain \
+      "apt update и пакеты: curl, jq, ca-certificates, nftables, dnsmasq, ppp, pppoe, openssl.
+Router-режим уже активен — dnsmasq/nftables НЕ останавливаю и не mask." \
+      "Пакеты на месте; LAN dual-serve без простоя"
+  else
+    explain \
+      "apt update и минимум пакетов: curl, jq, ca-certificates, nftables, dnsmasq, ppp, pppoe, openssl.
 nftables/dnsmasq сразу выключу — в lab не должны слушать LAN роутера." \
-    "Пакеты на месте; dnsmasq masked; nftables не active до router-on."
+      "Пакеты на месте; dnsmasq masked; nftables не active до router-on."
+  fi
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y --no-install-recommends \
     curl jq ca-certificates nftables dnsmasq ppp pppoe openssl
+
+  if [[ "$ROUTER_LIVE" -eq 1 ]]; then
+    info "router live — пропускаю disable nftables / mask dnsmasq"
+    return 0
+  fi
   systemctl disable --now nftables 2>/dev/null || true
   systemctl mask dnsmasq 2>/dev/null || true
   systemctl stop dnsmasq 2>/dev/null || true
@@ -902,7 +979,7 @@ EOF
   systemctl enable sing-box
 }
 
-write_dotenv() {
+write_dotenv_fresh() {
   local secret="$1"
   local wan_mode=${WAN_MODE:-dhcp}
   local pppoe_user=${PPPOE_USER:-}
@@ -924,17 +1001,52 @@ PPPOE_USER=${pppoe_user}
 PPPOE_VLAN=${pppoe_vlan}
 EOF
   chmod 600 "$OPT_ENV"
-  # убрать старые расположения секрета
+  rm -f "$SB_DIR/clash-api.secret" "$SB_DIR/ui.env" "$SB_DIR/.env"
+}
+
+# Upgrade: обновить только известные ключи, чужие строки в .env не трогать.
+write_dotenv_merge() {
+  local secret="$1"
+  local wan_mode=${WAN_MODE:-dhcp}
+  local pppoe_user=${PPPOE_USER:-}
+  local pppoe_vlan=${PPPOE_VLAN:-}
+  mkdir -p "$OPT_ROOT" "$SB_DIR"
+  touch "$OPT_ENV"
+  chmod 600 "$OPT_ENV"
+  env_set_kv CLASH_API "http://127.0.0.1:9090"
+  env_set_kv CLASH_SECRET "$secret"
+  env_set_kv SINGBOX_CONFIG "$SB_CFG"
+  env_set_kv SINGBOX_UNIT "sing-box"
+  # WEBUI_* — только если ещё нет (не затирать кастом)
+  if ! grep -q '^WEBUI_LISTEN=' "$OPT_ENV" 2>/dev/null; then
+    env_set_kv WEBUI_LISTEN "10.10.10.1:80"
+  fi
+  if ! grep -q '^WEBUI_GITHUB_REPO=' "$OPT_ENV" 2>/dev/null; then
+    env_set_kv WEBUI_GITHUB_REPO "burzilov/nanopi-edge"
+  fi
+  env_set_kv WAN_IF "$WAN_IF"
+  env_set_kv LAN_IF "$LAN_IF"
+  env_set_kv WAN_MODE "$wan_mode"
+  env_set_kv PPPOE_USER "$pppoe_user"
+  env_set_kv PPPOE_VLAN "$pppoe_vlan"
   rm -f "$SB_DIR/clash-api.secret" "$SB_DIR/ui.env" "$SB_DIR/.env"
 }
 
 gen_clash_secrets() {
-  explain \
-    "Сгенерирую ${OPT_ENV} (0600): CLASH_API/SECRET, пути, WAN_IF/LAN_IF.
+  if [[ "$INSTALL_MODE" == "upgrade" ]]; then
+    explain \
+      "Обновлю ключи в ${OPT_ENV} (merge). CLASH_SECRET сохраню.
+Чужие переменные в файле не удаляю." \
+      "Файл ${OPT_ENV}; clash_api на 127.0.0.1:9090"
+  else
+    explain \
+      "Сгенерирую ${OPT_ENV} (0600): CLASH_API/SECRET, пути, WAN_IF/LAN_IF.
 Тот же CLASH_SECRET подставлю в config.json (sing-box читает только JSON)." \
-    "Файл ${OPT_ENV}; clash_api на 127.0.0.1:9090"
+      "Файл ${OPT_ENV}; clash_api на 127.0.0.1:9090"
+  fi
 
   local secret=""
+  local saved_wan="$WAN_IF" saved_lan="$LAN_IF"
   if [[ -f $OPT_ENV ]] && grep -q '^CLASH_SECRET=' "$OPT_ENV"; then
     # shellcheck disable=SC1090
     source "$OPT_ENV"
@@ -951,24 +1063,39 @@ gen_clash_secrets() {
     secret=${CLASH_SECRET:-}
     info "Мигрирую CLASH_SECRET из ui.env"
   fi
+  # source мог вернуть старые IF — оставляем значения с шага prompt_interfaces
+  WAN_IF="$saved_wan"
+  LAN_IF="$saved_lan"
   if [[ -z "${secret:-}" ]]; then
     secret=$(openssl rand -hex 16)
   fi
-  write_dotenv "$secret"
+  if [[ "$INSTALL_MODE" == "upgrade" && -f "$OPT_ENV" ]]; then
+    write_dotenv_merge "$secret"
+  else
+    write_dotenv_fresh "$secret"
+  fi
   CLASH_SECRET_VALUE=$secret
 }
 
 prompt_interfaces() {
-  explain \
-    "Уточню имена Ethernet. На R3S LTS обычно: WAN-разъём = end0, LAN = enp1s0.
+  local def_wan="${WAN_IF:-end0}"
+  local def_lan="${LAN_IF:-enp1s0}"
+  if [[ "$INSTALL_MODE" == "upgrade" ]]; then
+    explain \
+      "Интерфейсы из ${OPT_ENV} (можно поправить). На R3S LTS обычно: WAN=end0, LAN=enp1s0." \
+      "WAN_IF / LAN_IF сохранятся в ${OPT_ENV}"
+  else
+    explain \
+      "Уточню имена Ethernet. На R3S LTS обычно: WAN-разъём = end0, LAN = enp1s0.
 Lab-кабель сейчас в WAN-разъёме." \
-    "WAN_IF / LAN_IF сохранятся в ${OPT_ENV}"
+      "WAN_IF / LAN_IF сохранятся в ${OPT_ENV}"
+  fi
 
   echo "Сейчас:"
   ip -br link
   echo
-  WAN_IF=$(ask "WAN interface (разъём WAN на корпусе)" "end0")
-  LAN_IF=$(ask "LAN interface (разъём LAN на корпусе)" "enp1s0")
+  WAN_IF=$(ask "WAN interface (разъём WAN на корпусе)" "$def_wan")
+  LAN_IF=$(ask "LAN interface (разъём LAN на корпусе)" "$def_lan")
   [[ -n "$WAN_IF" && -n "$LAN_IF" ]] || die "пустые имена интерфейсов"
   [[ "$WAN_IF" != "$LAN_IF" ]] || die "WAN и LAN не должны совпадать"
 }
@@ -980,6 +1107,12 @@ build_singbox_config() {
     "Соберу единый ${SB_CFG}: TUN, AdGuard DoH, remote ruleset’ы, VLESS,
 selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (антипетля)." \
     "sing-box check успешен; mode 0600"
+
+  if [[ -f "$SB_CFG" ]]; then
+    local bak="${SB_CFG}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "$SB_CFG" "$bak"
+    info "Бэкап конфига: $bak"
+  fi
 
   mkdir -p "$SB_DIR"
   jq -n \
@@ -1127,6 +1260,7 @@ selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (анти�
 
   "$SINGBOX_BIN" check -c "$SB_CFG"
   ok "config check passed"
+  CONFIG_REBUILT=1
 }
 
 # Короткое имя → outbound tag: germany → vless-germany (уже с префиксом не трогаем).
@@ -1214,10 +1348,40 @@ run_wizard_and_build() {
   rm -f "$nodes_tmp" "${nodes_tmp}.new"
 }
 
-start_singbox() {
+# Upgrade: по умолчанию оставить боевой config.json.
+maybe_rebuild_config() {
+  local secret="$1"
+  if [[ "$INSTALL_MODE" != "upgrade" ]]; then
+    run_wizard_and_build "$secret"
+    return 0
+  fi
   explain \
-    "Запущу sing-box. Первый старт может занять до ~2 мин (remote rule-set)." \
-    "sing-box active; есть sb-tun"
+    "Боевой ${SB_CFG} уже есть. По умолчанию НЕ пересобираю (домены/узлы сохранятся).
+Пересборка — только если явно согласишься (сделаю .bak)." \
+    "config.json без изменений, либо новый из мастера VLESS"
+
+  if yesno "Пересобрать config.json мастером VLESS? (сотрёт текущий после бэкапа)" n; then
+    run_wizard_and_build "$secret"
+  else
+    info "Оставляю существующий ${SB_CFG}"
+    CONFIG_REBUILT=0
+    if [[ ! -f "$SB_CFG" ]]; then
+      die "нет ${SB_CFG} — нужна полная установка или согласие на мастер"
+    fi
+    "$SINGBOX_BIN" check -c "$SB_CFG" || die "существующий config.json не проходит check"
+  fi
+}
+
+start_singbox() {
+  if [[ "$INSTALL_MODE" == "upgrade" && "$CONFIG_REBUILT" -eq 0 ]]; then
+    explain \
+      "Перезапущу sing-box (бинарь/unit могли обновиться; config без изменений)." \
+      "sing-box active; есть sb-tun"
+  else
+    explain \
+      "Запущу sing-box. Первый старт может занять до ~2 мин (remote rule-set)." \
+      "sing-box active; есть sb-tun"
+  fi
 
   mkdir -p /var/lib/sing-box
   systemctl restart sing-box
@@ -1386,11 +1550,14 @@ usage() {
   cat <<EOF
 Usage: $0 [install|status|test]
 
-  (без аргументов / install)  интерактивная установка в lab + тесты
+  (без аргументов / install)  установка или обновление (авто)
   status                      диагностика
-  test                        приёмочные тесты sing-box
+  test                        приёмочные тесты
 
-После установки install.sh можно удалить.
+Повторный install безопасен для router-режима:
+  не mask dnsmasq / не stop nftables; config.json по умолчанию не трогает.
+  NANOPI_YES=1 — без вопросов (для WebUI; config не пересобирает).
+
 Постоянные команды:
   ${SCRIPTS_DIR}/router-on
   ${SCRIPTS_DIR}/lab-on
@@ -1402,13 +1569,61 @@ EOF
   exit 1
 }
 
+# Подтянуть шаблон nft (include port-forwards) без смены dual-serve.
+refresh_nft_if_router() {
+  detect_router_live
+  [[ "$ROUTER_LIVE" -eq 1 ]] || return 0
+  # shellcheck disable=SC1091
+  source "$SCRIPTS_DIR/common.sh"
+  nanopi_load_env
+  info "Router live: обновляю nftables.conf + restart nftables (port-forwards.nft сохраняется)"
+  nanopi_write_nft "${WAN_IF:-end0}"
+  systemctl restart nftables
+}
+
+# Сохранить копию установщика и опционально EDGE_VERSION (из релиза / WebUI).
+install_self_copy() {
+  local src="${BASH_SOURCE[0]:-$0}"
+  mkdir -p "$OPT_ROOT"
+  if [[ -f "$src" && "$(readlink -f "$src" 2>/dev/null || echo "$src")" != "$(readlink -f "$SELF_INSTALL" 2>/dev/null || echo "$SELF_INSTALL")" ]]; then
+    install -m 755 "$src" "$SELF_INSTALL"
+    info "Установщик → ${SELF_INSTALL}"
+  elif [[ -f "$src" && ! -f "$SELF_INSTALL" ]]; then
+    install -m 755 "$src" "$SELF_INSTALL"
+    info "Установщик → ${SELF_INSTALL}"
+  fi
+  if [[ -n "${EDGE_VERSION:-}" ]]; then
+    touch "$OPT_ENV"
+    chmod 600 "$OPT_ENV"
+    env_set_kv EDGE_VERSION "$EDGE_VERSION"
+    info "EDGE_VERSION=${EDGE_VERSION}"
+  fi
+}
+
 cmd_install() {
   need_root
+  load_env
+  detect_install_mode
+  detect_router_live
 
-  cat <<EOF
+  if [[ "$INSTALL_MODE" == "upgrade" ]]; then
+    cat <<EOF
+╔══════════════════════════════════════════════════════════╗
+║  NanoPi edge · UPDATE                                    ║
+║  scripts / пакеты / sing-box · config по умолчанию as-is ║
+╚══════════════════════════════════════════════════════════╝
+
+Режим: upgrade (автодетект повторного запуска)
+Router live: ${ROUTER_LIVE} (1 = dnsmasq/nft не гасим)
+Сохраняю: ${SB_CFG}, CLASH_SECRET, WAN_MODE/PPPoE, port-forwards
+Обновляю: ${SCRIPTS_DIR}/, пакеты, бинарь sing-box, unit, ключи .env
+
+EOF
+  else
+    cat <<EOF
 ╔══════════════════════════════════════════════════════════╗
 ║  NanoPi edge install (схема B)                           ║
-║  Одноразовый установщик · без WebUI                      ║
+║  Первая установка · без WebUI                            ║
 ╚══════════════════════════════════════════════════════════╝
 
 Предпосылки:
@@ -1417,29 +1632,34 @@ cmd_install() {
   • VLESS+Reality под рукой
   • Врезку сейчас НЕ делаем
 
-После успеха: install.sh можно удалить; останутся
+После успеха останутся
   ${OPT_ROOT}/.env, scripts/, /etc/sing-box/config.json
+Повторный запуск этого скрипта = безопасный upgrade.
 
 EOF
+  fi
 
   yesno "Продолжить?" y || exit 0
 
   step 1 "Инвентарь"
   explain \
-    "Сниму инвентарь ОС/сети — проверка lab и uplink." \
-    "Адрес на WAN в домашней LAN и default route."
+    "Сниму инвентарь ОС/сети." \
+    "Адреса и default route."
   show_inventory
-  yesno "Похоже на lab. Продолжаем?" y || exit 0
+  if [[ "$INSTALL_MODE" == "fresh" ]]; then
+    yesno "Похоже на lab. Продолжаем?" y || exit 0
+  fi
 
   step 2 "Интерфейсы WAN/LAN"
   prompt_interfaces
 
-  step 3 "Каталог ${OPT_ROOT}"
+  step 3 "Каталог ${OPT_ROOT} + scripts"
   explain \
-    "Создам ${OPT_ROOT} и постоянные scripts/ (router-on, wan-*, lab-on, proxy-select)." \
-    "${SCRIPTS_DIR}/router-on, wan-*, lab-on, proxy-select существуют"
+    "Запишу/обновлю постоянные scripts/ (router-on, wan-*, lab-on, proxy-select)." \
+    "${SCRIPTS_DIR}/router-on и остальные на месте"
   mkdir -p "$OPT_ROOT"
   write_ops_scripts
+  install_self_copy
 
   step 4 "Пакеты"
   install_packages
@@ -1455,12 +1675,37 @@ EOF
 
   step 8 ".env (${OPT_ENV})"
   gen_clash_secrets
+  # EDGE_VERSION мог прийти из WebUI — дописать после merge/fresh
+  if [[ -n "${EDGE_VERSION:-}" ]]; then
+    env_set_kv EDGE_VERSION "$EDGE_VERSION"
+  fi
 
-  step 9 "Мастер VLESS + единый config.json"
-  run_wizard_and_build "$CLASH_SECRET_VALUE"
+  step 9 "config.json"
+  maybe_rebuild_config "$CLASH_SECRET_VALUE"
 
-  step 10 "Запуск sing-box"
+  if [[ "$INSTALL_MODE" == "upgrade" ]]; then
+    step 10 "nftables (если router)"
+    refresh_nft_if_router
+  fi
+
+  step 11 "Запуск sing-box"
   start_singbox
+
+  if [[ "$INSTALL_MODE" == "upgrade" ]]; then
+    if yesno "Прогнать приёмочные тесты?" n; then
+      if ! run_tests; then
+        echo
+        echo "Тесты с ошибками. journalctl -u sing-box -n 80 --no-pager"
+        exit 1
+      fi
+    else
+      info "Тесты пропущены"
+    fi
+    echo
+    info "Upgrade готов. Router/WAN не переключал — система должна остаться как была."
+    info "WebUI отдельно: install-webui.sh (если нужна панель / порты)."
+    return 0
+  fi
 
   if ! run_tests; then
     echo
@@ -1470,7 +1715,7 @@ EOF
   fi
 
   print_cutover
-  info "Готово. При желании: rm -- \$0  (или удали скопированный install.sh)"
+  info "Готово. Повторный запуск этого скрипта безопасен (upgrade)."
 }
 
 main() {
@@ -1490,8 +1735,8 @@ main() {
     -h|--help|help)
       usage
       ;;
-    router-on|lab-on|proxy)
-      die "эта команда перенесена в ${SCRIPTS_DIR}/ (install.sh — только install|status|test)"
+    router-on|lab-on|proxy|upgrade)
+      die "неизвестная команда «${cmd}». Используй: install | status | test (upgrade — авто при повторном install)"
       ;;
     *)
       usage

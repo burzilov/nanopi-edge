@@ -1,10 +1,12 @@
 (function () {
   const dialog = document.getElementById("updates-dialog");
   const statusEl = document.getElementById("updates-status");
+  const detailEl = document.getElementById("updates-detail");
   const notesEl = document.getElementById("updates-notes");
   const applyBtn = document.getElementById("btn-apply-update");
   const checkBtn = document.getElementById("btn-check-updates");
   const overlay = document.getElementById("update-overlay");
+  const overlayTitle = document.getElementById("update-overlay-title");
   if (!dialog || !checkBtn) return;
 
   let pendingTag = "";
@@ -14,11 +16,19 @@
     statusEl.classList.toggle("err", !!isErr);
   }
 
+  function sleep(ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, ms);
+    });
+  }
+
   async function checkUpdates() {
     pendingTag = "";
     applyBtn.hidden = true;
     notesEl.hidden = true;
     notesEl.textContent = "";
+    detailEl.hidden = true;
+    detailEl.textContent = "";
     setStatus("Проверяю GitHub Releases…", false);
     dialog.showModal();
     try {
@@ -28,47 +38,46 @@
         setStatus(j.error || "Ошибка проверки", true);
         return;
       }
+      const webuiCur = (j.webui && j.webui.current) || "?";
+      const edgeCur = (j.edge && j.edge.current) || "?";
+      detailEl.textContent =
+        "Сейчас: WebUI " + webuiCur + ", Edge " + edgeCur;
+      detailEl.hidden = false;
+
       if (j.update_available) {
         pendingTag = j.latest;
-        setStatus(
-          "Доступна " + j.latest + " (сейчас " + j.current + "). Можно установить.",
-          false
-        );
+        setStatus("Доступна " + j.latest + ". Можно обновить edge и панель.", false);
         if (j.body) {
           notesEl.textContent = j.body;
           notesEl.hidden = false;
         }
         applyBtn.hidden = false;
       } else {
-        setStatus("Актуально: " + j.current + " (latest " + j.latest + ").", false);
+        setStatus("Актуально: " + (j.latest || webuiCur), false);
       }
     } catch (e) {
       setStatus(String(e), true);
     }
   }
 
-  function sleep(ms) {
-    return new Promise(function (resolve) {
-      setTimeout(resolve, ms);
-    });
-  }
-
   async function waitForVersion(expected, tries) {
     for (let i = 0; i < tries; i++) {
-      await sleep(2000);
+      await sleep(2500);
       try {
         const r = await fetch("/api/version", { cache: "no-store" });
         if (!r.ok) continue;
         const j = await r.json();
         if (!j.version) continue;
-        // панель снова отвечает; если версия совпала с ожидаемой — успех
-        if (!expected || j.version === expected || j.version.replace(/^v/, "") === String(expected).replace(/^v/, "")) {
+        if (
+          !expected ||
+          j.version === expected ||
+          j.version.replace(/^v/, "") === String(expected).replace(/^v/, "")
+        ) {
           return j.version;
         }
-        // другая версия тоже значит, что рестарт прошёл
-        if (i > 2) return j.version;
+        if (i > 3) return j.version;
       } catch (_) {
-        /* ещё лежит */
+        /* панель ещё лежит после webui */
       }
     }
     return null;
@@ -76,9 +85,20 @@
 
   async function applyUpdate() {
     if (!pendingTag) return;
-    if (!confirm("Установить WebUI " + pendingTag + " и перезапустить панель?")) return;
+    if (
+      !confirm(
+        "Обновить до " +
+          pendingTag +
+          "?\n\nСначала edge (scripts/sing-box), затем WebUI.\nconfig.json не пересобирается."
+      )
+    ) {
+      return;
+    }
     dialog.close();
     overlay.hidden = false;
+    if (overlayTitle) {
+      overlayTitle.textContent = "Обновляю до " + pendingTag + "…";
+    }
     const expected = pendingTag;
     try {
       await fetch("/api/updates/apply", {
@@ -87,14 +107,16 @@
         body: JSON.stringify({ version: pendingTag }),
       });
     } catch (_) {
-      /* соединение оборвётся при restart — ожидаемо */
+      /* обрыв при рестарте webui — ожидаемо */
     }
-    const ver = await waitForVersion(expected, 45);
+    const ver = await waitForVersion(expected, 60);
     overlay.hidden = true;
     if (ver) {
       location.reload();
     } else {
-      alert("Панель долго не отвечает. Проверь: systemctl status nanopi-webui");
+      alert(
+        "Панель долго не отвечает. Проверь: systemctl status nanopi-webui sing-box"
+      );
     }
   }
 

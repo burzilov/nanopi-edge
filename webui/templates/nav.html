@@ -16,26 +16,26 @@
   </nav>
   <div class="hdr-version">
     <span class="ver-label" title="Версия панели">{{AppVersion}}</span>
-    <button type="button" class="secondary" id="btn-check-updates">Обновления</button>
   </div>
 </header>
 <div id="toast-host" class="toast-host" aria-live="polite"
      hx-on::after-swap="clearTimeout(window.__toastHide); window.__toastHide=setTimeout(function(){ document.getElementById('toast-host').innerHTML=''; }, 5000)"></div>
 <dialog id="updates-dialog" class="updates-dialog">
   <form method="dialog" class="updates-form">
-    <h2>Обновления WebUI</h2>
+    <h2>Обновления</h2>
     <p id="updates-status" class="hint">—</p>
+    <p id="updates-detail" class="hint" hidden></p>
     <pre id="updates-notes" class="updates-notes" hidden></pre>
     <div class="updates-actions">
       <button type="submit" class="secondary" value="cancel">Закрыть</button>
-      <button type="button" id="btn-apply-update" class="danger" hidden>Установить</button>
+      <button type="button" id="btn-apply-update" class="danger" hidden>Обновить</button>
     </div>
   </form>
 </dialog>
 <div id="update-overlay" class="update-overlay" hidden>
   <div class="update-overlay-card">
-    <p>Устанавливаю обновление…</p>
-    <p class="hint">Панель перезапустится. Не закрывайте вкладку.</p>
+    <p id="update-overlay-title">Устанавливаю обновление…</p>
+    <p class="hint">Edge, затем WebUI. Панель перезапустится. Не закрывайте вкладку.</p>
   </div>
 </div>
 <script src="/static/updates.js" defer></script>

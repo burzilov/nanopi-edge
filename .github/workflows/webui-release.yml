@@ -61,12 +61,13 @@ jobs:
           mkdir -p "/tmp/${STAGE}"
           cp dist/nanopi-webui "/tmp/${STAGE}/"
           cp nanopi-webui.service "/tmp/${STAGE}/"
-          cp "${GITHUB_WORKSPACE}/install-webui.sh" "/tmp/${STAGE}/"
           printf '%s\n' "$VER" > "/tmp/${STAGE}/VERSION"
           ARCHIVE="nanopi-webui-linux-arm64.tar.gz"
           tar -C /tmp -czf "${GITHUB_WORKSPACE}/${ARCHIVE}" "$STAGE"
           echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
-          ls -la "${GITHUB_WORKSPACE}/${ARCHIVE}"
+          ls -la "${GITHUB_WORKSPACE}/${ARCHIVE}" \
+            "${GITHUB_WORKSPACE}/install-singbox.sh" \
+            "${GITHUB_WORKSPACE}/install-webui.sh"
 
       - name: Upload artifact (workflow)
         uses: actions/upload-artifact@v4
@@ -78,19 +79,28 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.pack.outputs.archive }}
+          files: |
+            ${{ steps.pack.outputs.archive }}
+            install-singbox.sh
+            install-webui.sh
           generate_release_notes: true
           body: |
-            WebUI для NanoPi edge (`linux/arm64`), версия `${{ steps.ver.outputs.version }}`.
+            NanoPi edge + WebUI, версия `${{ steps.ver.outputs.version }}`.
 
-            Установка / обновление на плате:
+            Ассеты:
+            - `nanopi-webui-linux-arm64.tar.gz` — бинарь + unit
+            - `install-webui.sh` — установщик панели
+            - `install-singbox.sh` — установщик / upgrade edge
+
+            С платы (панель «Проверить обновления») или вручную:
             ```bash
-            bash install-webui.sh
-            # или неинтерактивно:
-            WEBUI_VERSION=${{ steps.ver.outputs.version }} bash install-webui.sh --noninteractive
+            curl -fsSL -o /opt/nanopi-edge/install-singbox.sh \
+              https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.version }}/install-singbox.sh
+            curl -fsSL -o /opt/nanopi-edge/install-webui.sh \
+              https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.version }}/install-webui.sh
+            chmod +x /opt/nanopi-edge/install-singbox.sh /opt/nanopi-edge/install-webui.sh
+            NANOPI_YES=1 EDGE_VERSION=${{ steps.ver.outputs.version }} bash /opt/nanopi-edge/install-singbox.sh
+            WEBUI_VERSION=${{ steps.ver.outputs.version }} bash /opt/nanopi-edge/install-webui.sh --noninteractive
             ```
-
-            Артефакт: `nanopi-webui-linux-arm64.tar.gz`
-            (бинарь + unit + `install-webui.sh` + `VERSION`).
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

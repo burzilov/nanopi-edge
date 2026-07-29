@@ -92,10 +92,9 @@ install_from_archive() {
   local stage
   stage=$(mktemp -d)
   tar -xzf "$archive" -C "$stage"
-  local bin unit script
+  local bin unit
   bin=$(find "$stage" -type f -name nanopi-webui | head -1)
   unit=$(find "$stage" -type f -name nanopi-webui.service | head -1)
-  script=$(find "$stage" -type f -name install-webui.sh | head -1)
   [[ -n "$bin" && -f "$bin" ]] || die "в архиве нет nanopi-webui"
 
   info "Ставлю бинарь → ${BIN_DST}"
@@ -118,15 +117,12 @@ RestartSec=2s
 [Install]
 WantedBy=multi-user.target
 EOF
-  # unit из архива не обязателен — эталон выше
   [[ -n "$unit" ]] || true
 
   mkdir -p "$OPT_ROOT"
-  if [[ -n "$script" && -f "$script" ]]; then
-    install -m 755 "$script" "$SCRIPT_DST"
-  elif [[ -f "${BASH_SOURCE[0]}" ]]; then
-    cp -a "${BASH_SOURCE[0]}" "$SCRIPT_DST"
-    chmod 755 "$SCRIPT_DST"
+  # скрипт — отдельный ассет релиза; на плате сохраняем копию запускаемого файла
+  if [[ -f "${BASH_SOURCE[0]}" ]]; then
+    install -m 755 "${BASH_SOURCE[0]}" "$SCRIPT_DST"
   fi
 
   # дописать WEBUI_GITHUB_REPO в .env только если вызывающий явно передал репо

@@ -55,6 +55,10 @@ bash install-singbox.sh
 приёмочные тесты. Врезку ISP **не** делает — в конце печатает чеклист кабелей и
 `/opt/nanopi-edge/scripts/router-on`.
 
+**Повторный запуск безопасен (upgrade):** обновляет scripts/пакеты/бинарь,
+не гасит dnsmasq/nftables в router-режиме, по умолчанию не трогает
+`config.json`. Без вопросов (WebUI / cron): `NANOPI_YES=1 bash install-singbox.sh`.
+
 После успеха `install-singbox.sh` можно удалить. Остаётся:
 
 ```text
@@ -120,6 +124,10 @@ bash install-webui.sh
 /opt/nanopi-edge/scripts/wan-dhcp
 /opt/nanopi-edge/scripts/wan-pppoe <user> <pass> [vlan]
 /opt/nanopi-edge/scripts/wan-status | jq .
+
+# обновить edge (scripts/бинарь; config.json не трогает)
+# NANOPI_YES=1 bash install-singbox.sh
+# или из панели «Статус» → «Проверить обновления» → «Обновить»
 
 # активный VLESS в selector «proxy»
 /opt/nanopi-edge/scripts/proxy-select get

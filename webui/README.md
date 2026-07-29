@@ -35,8 +35,9 @@ bash install-webui.sh
 WEBUI_VERSION=v0.0.2 bash install-webui.sh --noninteractive
 ```
 
-В панели: номер версии в шапке → «Обновления» → проверка GitHub → «Установить»
-(вызывает `/opt/nanopi-edge/install-webui.sh --noninteractive`).
+В панели на статусе: «Проверить обновления» → при наличии релиза — «Обновить»
+(скачивает `install-singbox.sh` и `install-webui.sh` из ассетов, запускает
+по очереди: edge → webui).
 
 Или вручную после сборки на хосте:
 
