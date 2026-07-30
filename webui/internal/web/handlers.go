@@ -487,16 +487,16 @@ func (s *Server) handleMobileVlessCreate(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	set, err := parseMobileVlessSettings(r)
-	if err != nil {
+	port, err := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
+	if err != nil || port == 0 {
+		port = mobilevless.DefaultPort
+	}
+	label := strings.TrimSpace(r.FormValue("label"))
+	if err := mobilevless.CreateProfile(port, label); err != nil {
 		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
 		return
 	}
-	if err := mobilevless.CreateProfile(set); err != nil {
-		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
-		return
-	}
-	s.render(w, "mobile_vless_inner", s.mobileVlessData("Профиль создан. Нажмите «Показать профиль», чтобы получить URI и QR", ""))
+	s.render(w, "mobile_vless_inner", s.mobileVlessData("Профиль создан. Теперь выберите маскировочный сайт и нажмите «Сохранить и включить»", ""))
 }
 
 func (s *Server) handleMobileVlessRotate(w http.ResponseWriter, r *http.Request) {

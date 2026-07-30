@@ -16,11 +16,11 @@ API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-ppp
 NanoPi сам ставит DNAT 80/443, маршрут за CPE и DNS hairpin. Пустое сохранение всё снимает.
 На Keenetic: DNS = `10.10.10.1`, МЭ с `10.10.10.0/24` на Nginx Proxy Manager.
 
-**Мобильный VLESS:** страница `/mobile-vless` — входящий VLESS+Reality (TCP/8443) для
-одного Hiddify-клиента. Секреты в `/etc/sing-box/inbound-vless-reality.json` (`0600`).
-URI/QR выдаются только по кнопке «Показать профиль» (`Cache-Control: no-store`).
-`GET /api/mobile-vless` — статус без UUID/ключей/URI. Панель без auth (LAN trust):
-не открывайте WebUI в интернет.
+**Мобильный VLESS:** страница `/mobile-vless` — сначала создание профиля (метка + порт),
+затем маскировочный сайт и включение inbound (TCP/8443). Секреты в
+`/etc/sing-box/inbound-vless-reality.json` (`0600`). URI/QR — только по кнопке
+«Показать URI и QR» (`Cache-Control: no-store`). `GET /api/mobile-vless` — статус
+без UUID/ключей/URI. Панель без auth (LAN trust): не открывайте WebUI в интернет.
 
 Смена VLESS на статусе пишет `default` в selector `proxy` в `config.json` и
 перезапускает sing-box.

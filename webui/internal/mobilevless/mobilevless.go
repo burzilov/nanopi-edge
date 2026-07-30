@@ -58,6 +58,7 @@ type Settings struct {
 // Status — несекретное состояние для страницы и API.
 type Status struct {
 	Enabled         bool     `json:"enabled"`
+	HasProfile      bool     `json:"has_profile"`
 	Configured      bool     `json:"configured"`
 	ProfileActive   bool     `json:"profile_active"`
 	Port            int      `json:"port"`
@@ -71,6 +72,7 @@ type Status struct {
 	Label           string   `json:"label,omitempty"`
 	CreatedAt       string   `json:"created_at,omitempty"`
 	InboundPresent  bool     `json:"inbound_present"`
+	SiteReady       bool     `json:"site_ready"`
 	Hint            string   `json:"hint,omitempty"`
 }
 
@@ -221,10 +223,13 @@ func GetStatus() (Status, error) {
 	if len(wan) > 0 {
 		wanIP = wan[0]
 	}
+	hasProfile := st.UUID != "" && st.PrivateKey != "" && st.PublicKey != ""
+	siteReady := strings.TrimSpace(st.HandshakeServer) != "" && strings.TrimSpace(st.ServerName) != ""
 	out := Status{
 		Enabled:         st.Enabled,
-		Configured:      st.PrivateKey != "" && st.UUID != "",
-		ProfileActive:   st.Enabled && st.UUID != "" && st.PrivateKey != "",
+		HasProfile:      hasProfile,
+		Configured:      hasProfile,
+		ProfileActive:   st.Enabled && hasProfile && siteReady,
 		Port:            st.Port,
 		ServiceActive:   sysd.IsActive(UnitName()) == "active",
 		WanIP:           wanIP,
@@ -234,15 +239,20 @@ func GetStatus() (Status, error) {
 		ServerName:      st.ServerName,
 		Label:           st.Label,
 		CreatedAt:       st.CreatedAt,
-		ListenOK:        portListening(st.Port),
+		SiteReady:       siteReady,
+		ListenOK:        st.Enabled && portListening(st.Port),
 	}
 	if b, err := os.ReadFile(ConfigPath()); err == nil {
 		out.InboundPresent = HasInbound(b)
 	}
 	if out.Enabled && !out.InboundPresent {
-		out.Hint = "Включено в состоянии, но inbound vless-mobile отсутствует в config.json — сохраните настройки заново."
+		out.Hint = "Включено в состоянии, но inbound vless-mobile отсутствует в config.json — сохраните маскировочный сайт заново."
 	}
-	if out.WanIP == "" {
+	if !out.HasProfile {
+		out.Hint = "Сначала создайте профиль (метка и порт), затем выберите маскировочный TLS-сайт."
+	} else if out.HasProfile && !out.SiteReady {
+		out.Hint = "Профиль есть. Выберите и проверьте маскировочный сайт, затем нажмите «Сохранить и включить»."
+	} else if out.WanIP == "" {
 		if out.Hint != "" {
 			out.Hint += " "
 		}
@@ -267,6 +277,17 @@ func portListening(port int) bool {
 		}
 	}
 	return false
+}
+
+func waitListening(port int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if portListening(port) {
+			return true
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return portListening(port)
 }
 
 // CheckHandshake проверяет DNS, TCP и TLS к маскировочному сайту.
@@ -319,7 +340,7 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// SaveAndEnable сохраняет настройки, при необходимости генерирует ключи/профиль и применяет inbound.
+// SaveAndEnable сохраняет маскировочный сайт/порт и включает inbound (профиль уже должен быть).
 func SaveAndEnable(s Settings, createProfileIfMissing bool) error {
 	if err := ValidateSettings(s); err != nil {
 		return err
@@ -332,79 +353,49 @@ func SaveAndEnable(s Settings, createProfileIfMissing bool) error {
 	if err != nil {
 		return err
 	}
+	if st.UUID == "" || st.PrivateKey == "" || st.PublicKey == "" {
+		if createProfileIfMissing {
+			return fmt.Errorf("сначала создайте профиль")
+		}
+		return fmt.Errorf("профиль ещё не создан — сначала шаг «Создать профиль»")
+	}
 	st.Enabled = true
 	st.Port = s.Port
 	st.HandshakeServer = strings.TrimSpace(s.HandshakeServer)
 	st.HandshakePort = s.HandshakePort
 	st.ServerName = strings.TrimSpace(s.ServerName)
-	if strings.TrimSpace(s.Label) != "" {
-		st.Label = strings.TrimSpace(s.Label)
-	} else if st.Label == "" {
-		st.Label = "mobile"
-	}
-	if st.PrivateKey == "" || st.PublicKey == "" {
-		priv, pub, err := generateRealityKeypair()
-		if err != nil {
-			return err
-		}
-		st.PrivateKey = priv
-		st.PublicKey = pub
-	}
-	if createProfileIfMissing && st.UUID == "" {
-		uuid, err := generateUUID()
-		if err != nil {
-			return err
-		}
-		sid, err := generateShortID()
-		if err != nil {
-			return err
-		}
-		st.UUID = uuid
-		st.ShortID = sid
-		st.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	if st.UUID == "" {
-		return fmt.Errorf("профиль ещё не создан — нажмите «Создать профиль»")
-	}
 	if err := applyConfig(st); err != nil {
 		return err
 	}
-	return saveState(st)
-}
-
-// CreateProfile создаёт UUID/short_id (и ключи при необходимости) и включает inbound.
-func CreateProfile(s Settings) error {
-	if err := ValidateSettings(s); err != nil {
+	if err := saveState(st); err != nil {
 		return err
 	}
-	check := CheckHandshake(s.HandshakeServer, s.HandshakePort, s.ServerName)
-	if !check.OK {
-		return fmt.Errorf("проверка маскировочного сайта: %s", check.Message)
+	_ = waitListening(st.Port, 8*time.Second)
+	return nil
+}
+
+// CreateProfile создаёт ключи и UUID без включения inbound (сайт настраивается отдельно).
+func CreateProfile(port int, label string) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("порт должен быть 1..65535")
+	}
+	if port == 80 || port == 443 {
+		return fmt.Errorf("порты 80 и 443 заняты Nginx Proxy Manager — выберите другой, например 8443")
 	}
 	st, err := Load()
 	if err != nil {
 		return err
 	}
-	if st.UUID != "" && st.Enabled {
+	if st.UUID != "" && st.PrivateKey != "" {
 		return fmt.Errorf("профиль уже есть — используйте «Перевыпустить» или «Отозвать»")
 	}
-	st.Enabled = true
-	st.Port = s.Port
-	st.HandshakeServer = strings.TrimSpace(s.HandshakeServer)
-	st.HandshakePort = s.HandshakePort
-	st.ServerName = strings.TrimSpace(s.ServerName)
-	if strings.TrimSpace(s.Label) != "" {
-		st.Label = strings.TrimSpace(s.Label)
-	} else if st.Label == "" {
-		st.Label = "mobile"
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "mobile"
 	}
-	if st.PrivateKey == "" || st.PublicKey == "" {
-		priv, pub, err := generateRealityKeypair()
-		if err != nil {
-			return err
-		}
-		st.PrivateKey = priv
-		st.PublicKey = pub
+	priv, pub, err := generateRealityKeypair()
+	if err != nil {
+		return err
 	}
 	uuid, err := generateUUID()
 	if err != nil {
@@ -414,12 +405,18 @@ func CreateProfile(s Settings) error {
 	if err != nil {
 		return err
 	}
+	st.Enabled = false
+	st.Port = port
+	st.Label = label
+	st.PrivateKey = priv
+	st.PublicKey = pub
 	st.UUID = uuid
 	st.ShortID = sid
 	st.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := applyConfig(st); err != nil {
-		return err
-	}
+	// сайт ещё не выбран — inbound не поднимаем
+	st.HandshakeServer = ""
+	st.HandshakePort = DefaultHSPort
+	st.ServerName = ""
 	return saveState(st)
 }
 
@@ -429,8 +426,8 @@ func RotateProfile() error {
 	if err != nil {
 		return err
 	}
-	if st.PrivateKey == "" {
-		return fmt.Errorf("сначала сохраните настройки и создайте профиль")
+	if st.PrivateKey == "" || st.UUID == "" {
+		return fmt.Errorf("сначала создайте профиль")
 	}
 	uuid, err := generateUUID()
 	if err != nil {
@@ -442,10 +439,12 @@ func RotateProfile() error {
 	}
 	st.UUID = uuid
 	st.ShortID = sid
-	st.Enabled = true
 	st.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := applyConfig(st); err != nil {
-		return err
+	if st.Enabled && st.HandshakeServer != "" && st.ServerName != "" {
+		if err := applyConfig(st); err != nil {
+			return err
+		}
+		_ = waitListening(st.Port, 8*time.Second)
 	}
 	return saveState(st)
 }
@@ -474,6 +473,9 @@ func ShowProfile() (Profile, error) {
 	}
 	if !st.Enabled || st.UUID == "" || st.PublicKey == "" {
 		return Profile{}, fmt.Errorf("нет активного профиля")
+	}
+	if strings.TrimSpace(st.ServerName) == "" || strings.TrimSpace(st.HandshakeServer) == "" {
+		return Profile{}, fmt.Errorf("сначала сохраните маскировочный сайт")
 	}
 	wan := hairpin.WanIPv4s()
 	if len(wan) == 0 {
