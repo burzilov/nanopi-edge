@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"nanopi-webui/internal/config"
 	"nanopi-webui/internal/domains"
 	"nanopi-webui/internal/logfmt"
+	"nanopi-webui/internal/mobilevless"
 	"nanopi-webui/internal/proxymgr"
 	"nanopi-webui/internal/sbconfig"
 	"nanopi-webui/internal/sysd"
@@ -57,6 +59,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /proxy-manager", s.handleProxyManagerPage)
 	mux.HandleFunc("POST /proxy-manager", s.handleProxyManagerSave)
 	mux.HandleFunc("GET /api/proxy-manager", s.handleAPIProxyManagerGet)
+	mux.HandleFunc("GET /mobile-vless", s.handleMobileVlessPage)
+	mux.HandleFunc("POST /mobile-vless/settings", s.handleMobileVlessSettings)
+	mux.HandleFunc("POST /mobile-vless/check", s.handleMobileVlessCheck)
+	mux.HandleFunc("POST /mobile-vless/profile/create", s.handleMobileVlessCreate)
+	mux.HandleFunc("POST /mobile-vless/profile/rotate", s.handleMobileVlessRotate)
+	mux.HandleFunc("POST /mobile-vless/profile/revoke", s.handleMobileVlessRevoke)
+	mux.HandleFunc("POST /mobile-vless/profile/show", s.handleMobileVlessShow)
+	mux.HandleFunc("GET /api/mobile-vless", s.handleAPIMobileVlessGet)
 	mux.HandleFunc("GET /config", s.handleConfigPage)
 	mux.HandleFunc("POST /config/check", s.handleConfigCheck)
 	mux.HandleFunc("POST /config/save-restart", s.handleConfigSaveRestart)
@@ -358,6 +368,181 @@ func (s *Server) handleAPIProxyManagerGet(w http.ResponseWriter, r *http.Request
 	s.writeJSON(w, http.StatusOK, st)
 }
 
+type mobileVlessPageData struct {
+	mobilevless.Status
+	Presets    []mobilevless.Preset
+	Message    string
+	Error      string
+	CheckOK    bool
+	CheckMsg   string
+	ProfileURI string
+	ProfileQR  template.URL
+}
+
+func (s *Server) mobileVlessData(msg, errMsg string) mobileVlessPageData {
+	d := mobileVlessPageData{
+		Message: msg,
+		Error:   errMsg,
+		Presets: mobilevless.Presets(),
+	}
+	st, err := mobilevless.GetStatus()
+	if err != nil {
+		if d.Error == "" {
+			d.Error = err.Error()
+		}
+		if d.Port == 0 {
+			d.Port = mobilevless.DefaultPort
+		}
+		if d.HandshakePort == 0 {
+			d.HandshakePort = mobilevless.DefaultHSPort
+		}
+		return d
+	}
+	d.Status = st
+	if d.Port == 0 {
+		d.Port = mobilevless.DefaultPort
+	}
+	if d.HandshakePort == 0 {
+		d.HandshakePort = mobilevless.DefaultHSPort
+	}
+	return d
+}
+
+func parseMobileVlessSettings(r *http.Request) (mobilevless.Settings, error) {
+	port, err := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
+	if err != nil {
+		return mobilevless.Settings{}, fmt.Errorf("некорректный порт")
+	}
+	hsPort, err := strconv.Atoi(strings.TrimSpace(r.FormValue("handshake_port")))
+	if err != nil || hsPort == 0 {
+		hsPort = mobilevless.DefaultHSPort
+	}
+	return mobilevless.Settings{
+		Port:            port,
+		HandshakeServer: strings.TrimSpace(r.FormValue("handshake_server")),
+		HandshakePort:   hsPort,
+		ServerName:      strings.TrimSpace(r.FormValue("server_name")),
+		Label:           strings.TrimSpace(r.FormValue("label")),
+	}, nil
+}
+
+func (s *Server) handleMobileVlessPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	s.render(w, "mobile_vless", s.mobileVlessData("", ""))
+}
+
+func (s *Server) handleMobileVlessSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	set, err := parseMobileVlessSettings(r)
+	if err != nil {
+		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
+		return
+	}
+	if err := mobilevless.SaveAndEnable(set, false); err != nil {
+		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
+		return
+	}
+	s.render(w, "mobile_vless_inner", s.mobileVlessData("Настройки сохранены, inbound включён, sing-box перезапущен", ""))
+}
+
+func (s *Server) handleMobileVlessCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	set, err := parseMobileVlessSettings(r)
+	d := s.mobileVlessData("", "")
+	if err != nil {
+		d.Error = err.Error()
+		s.render(w, "mobile_vless_inner", d)
+		return
+	}
+	// показать введённые значения в форме после проверки
+	d.Port = set.Port
+	d.HandshakeServer = set.HandshakeServer
+	d.HandshakePort = set.HandshakePort
+	d.ServerName = set.ServerName
+	d.Label = set.Label
+	res := mobilevless.CheckHandshake(set.HandshakeServer, set.HandshakePort, set.ServerName)
+	d.CheckOK = res.OK
+	d.CheckMsg = res.Message
+	if res.OK {
+		d.Message = "Маскировочный сайт доступен"
+	} else {
+		d.Error = "Маскировочный сайт не прошёл проверку"
+	}
+	s.render(w, "mobile_vless_inner", d)
+}
+
+func (s *Server) handleMobileVlessCreate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	set, err := parseMobileVlessSettings(r)
+	if err != nil {
+		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
+		return
+	}
+	if err := mobilevless.CreateProfile(set); err != nil {
+		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
+		return
+	}
+	s.render(w, "mobile_vless_inner", s.mobileVlessData("Профиль создан. Нажмите «Показать профиль», чтобы получить URI и QR", ""))
+}
+
+func (s *Server) handleMobileVlessRotate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := mobilevless.RotateProfile(); err != nil {
+		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
+		return
+	}
+	s.render(w, "mobile_vless_inner", s.mobileVlessData("Профиль перевыпущен — старый QR больше не действует. Покажите новый профиль", ""))
+}
+
+func (s *Server) handleMobileVlessRevoke(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := mobilevless.Revoke(); err != nil {
+		s.render(w, "mobile_vless_inner", s.mobileVlessData("", err.Error()))
+		return
+	}
+	s.render(w, "mobile_vless_inner", s.mobileVlessData("Профиль отозван, inbound выключен", ""))
+}
+
+func (s *Server) handleMobileVlessShow(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	prof, err := mobilevless.ShowProfile()
+	if err != nil {
+		s.render(w, "mobile_vless_profile", mobileVlessPageData{Error: err.Error()})
+		return
+	}
+	s.render(w, "mobile_vless_profile", mobileVlessPageData{
+		ProfileURI: prof.URI,
+		ProfileQR:  template.URL(prof.QRPNG),
+	})
+}
+
+func (s *Server) handleAPIMobileVlessGet(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	st, err := mobilevless.GetStatus()
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	// явно без секретов
+	s.writeJSON(w, http.StatusOK, st)
+}
+
 func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 	b, err := os.ReadFile(s.Env.SingboxConfig)
 	data := map[string]any{"Config": string(b), "Message": "", "Error": "", "CheckOut": ""}
@@ -441,7 +626,11 @@ func (s *Server) handleConfigSaveRestart(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
-	data["Message"] = "Конфиг сохранён, sing-box перезапущен. Интернет мог кратко моргнуть"
+	msg := "Конфиг сохранён, sing-box перезапущен. Интернет мог кратко моргнуть"
+	if warn := mobilevless.WarnIfInboundMissing(content); warn != "" {
+		msg += "\n\n" + warn
+	}
+	data["Message"] = msg
 	s.render(w, "config_inner", data)
 }
 

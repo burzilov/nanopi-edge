@@ -19,11 +19,12 @@ ISP (DHCP или PPPoE ± VLAN)
 
 - Выборочный прокси: remote ruleset’ы + домены → VLESS, остальное — direct
 - Несколько VLESS+Reality узлов, переключение через clash_api / CLI / WebUI
+- **Мобильный VLESS+Reality** (TCP/8443): один Hiddify-профиль, трафик через те же route-правила
 - DNS: AdGuard DoH в sing-box; dnsmasq на LAN → AdGuard
 - WAN к ISP: **DHCP** или **PPPoE** (логин/пароль, опциональный VLAN) — CLI и WebUI
 - LAN к роутеру: одновременно DHCP и PPPoE-server (accept-any) — роутер может
   оставаться в своём WAN-режиме
-- Лёгкая веб-панель (Go + HTMX): статус, WAN, логи, proxy, домены, проброс портов, конфиг
+- Лёгкая веб-панель (Go + HTMX): статус, WAN, логи, proxy, домены, мобильный VLESS, проброс портов, конфиг
 - Установщики: один файл `install-singbox.sh` (на плате пишет `/opt/nanopi-edge/scripts/`)
 
 **Не цель проекта:** тяжёлый firewall, WireGuard как основной транспорт,
@@ -104,6 +105,23 @@ bash install-webui.sh
 один IP виртуалки, роутер определяется сам. Пустое поле снимает проброс, маршрут и DNS alias.
 На Keenetic: DNS клиентов = `10.10.10.1` и МЭ WAN→Nginx Proxy Manager 80/443.
 
+### Мобильный VLESS (Hiddify)
+
+Страница панели **Мобильный VLESS**: входящий VLESS+Reality на отдельном TCP-порте
+(по умолчанию `8443`; `80`/`443` остаются у NPM). Один профиль для телефона.
+
+1. Выберите маскировочный TLS-сайт (пресет или свой) → «Проверить сайт».
+2. «Создать профиль» → «Показать профиль» → импорт QR/URI в Hiddify.
+3. Проверка из домашнего Wi‑Fi, затем с выключенным Wi‑Fi (мобильная сеть) —
+   так же подтверждается, что провайдер не режет TCP/8443.
+4. Трафик телефона идёт по тем же правилам sing-box (proxy / direct), что и домашний TUN.
+
+Секреты: `/etc/sing-box/inbound-vless-reality.json` (`0600`), не в git. При явной
+пересборке `config.json` мастером inbound восстанавливается из этого файла.
+Панель без auth: любой с доступом к `http://10.10.10.1/` может выдать/отозвать профиль —
+не слушайте WebUI на WAN. Диагностика без секретов:
+`/opt/nanopi-edge/scripts/inbound-status | jq .`
+
 ## Репозиторий
 
 | Путь                 | Назначение                                           |
@@ -117,7 +135,7 @@ bash install-webui.sh
 | `VERSION`            | Текущая версия релиза                                |
 
 Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE,
-`HAIRPIN_DNS_TARGET`) в git **не** хранятся.
+`HAIRPIN_DNS_TARGET`, `inbound-vless-reality.json`) в git **не** хранятся.
 
 ## Управление на хосте
 
@@ -129,6 +147,7 @@ bash install-webui.sh
 /opt/nanopi-edge/scripts/wan-pppoe <user> <pass> [vlan]
 /opt/nanopi-edge/scripts/wan-status | jq .
 /opt/nanopi-edge/scripts/hairpin-dns-refresh   # если задан HAIRPIN_DNS_TARGET
+/opt/nanopi-edge/scripts/inbound-status | jq . # мобильный VLESS (без секретов)
 
 # обновить edge (scripts/бинарь; config.json не трогает)
 # NANOPI_YES=1 bash install-singbox.sh
