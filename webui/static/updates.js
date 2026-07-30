@@ -8,9 +8,11 @@
   const overlay = document.getElementById("update-overlay");
   const overlayTitle = document.getElementById("update-overlay-title");
   const overlayStep = document.getElementById("update-overlay-step");
+  const overlayDismiss = document.getElementById("update-overlay-dismiss");
   if (!dialog || !checkBtn) return;
 
   let pendingTag = "";
+  let waiting = false;
 
   function setStatus(text, isErr) {
     statusEl.textContent = text;
@@ -25,6 +27,11 @@
 
   function normVer(v) {
     return String(v || "").replace(/^v/, "");
+  }
+
+  function hideOverlay() {
+    waiting = false;
+    if (overlay) overlay.hidden = true;
   }
 
   function stepLabel(step) {
@@ -93,29 +100,13 @@
     let lastStatus = null;
     let webuiOkStreak = 0;
     for (let i = 0; i < tries; i++) {
-      await sleep(2000);
-      let st = null;
-      try {
-        const r = await fetch("/api/updates/status", { cache: "no-store" });
-        if (r.ok) {
-          st = await r.json();
-          lastStatus = st;
-          if (overlayStep) {
-            overlayStep.textContent =
-              stepLabel(st.step) + (st.version ? " → " + st.version : "");
-          }
-          if (st.state === "error") {
-            return { ok: false, status: st };
-          }
-        }
-      } catch (_) {
-        if (overlayStep) {
-          overlayStep.textContent = "Панель перезапускается…";
-        }
+      if (!waiting) {
+        return { ok: false, status: lastStatus, message: "Ожидание отменено" };
       }
+      await sleep(1500);
 
-      // Главный критерий готовности: новая панель уже отвечает нужной версией.
-      // (status=ok может не успеть записаться, если worker убили на restart.)
+      // Сначала версия панели: status=ok может не записаться, если воркер
+      // убили на restart вместе с cgroup webui.
       try {
         const j = await fetchVersion();
         if (j && normVer(j.version) === normVer(expected)) {
@@ -128,22 +119,39 @@
           if (webuiOkStreak >= 2) {
             return {
               ok: true,
-              status: st || lastStatus,
+              status: lastStatus,
               version: { version: j.version, edge: j.edge_version },
             };
           }
-          continue;
+        } else {
+          webuiOkStreak = 0;
         }
       } catch (_) {
-        /* ещё лежит */
-      }
-      webuiOkStreak = 0;
-
-      if (st && st.state === "ok" && normVer(st.version) === normVer(expected)) {
-        // status ok, но /api/version ещё не поднялся — подождём в цикле
+        webuiOkStreak = 0;
         if (overlayStep) {
-          overlayStep.textContent = "Apply ok, жду ответ панели…";
+          overlayStep.textContent = "Панель перезапускается…";
         }
+      }
+
+      try {
+        const r = await fetch("/api/updates/status", { cache: "no-store" });
+        if (r.ok) {
+          const st = await r.json();
+          lastStatus = st;
+          if (st.state === "error") {
+            return { ok: false, status: st };
+          }
+          // Не затирать «WebUI готов», если версия уже совпала.
+          if (webuiOkStreak === 0 && overlayStep) {
+            overlayStep.textContent =
+              stepLabel(st.step) + (st.version ? " → " + st.version : "");
+          }
+          if (st.state === "ok" && normVer(st.version) === normVer(expected) && webuiOkStreak >= 1) {
+            return { ok: true, status: st };
+          }
+        }
+      } catch (_) {
+        /* сеть моргнула */
       }
     }
     return { ok: false, status: lastStatus, message: "Таймаут ожидания apply" };
@@ -161,6 +169,7 @@
       return;
     }
     dialog.close();
+    waiting = true;
     overlay.hidden = false;
     if (overlayTitle) {
       overlayTitle.textContent = "Обновляю до " + pendingTag + "…";
@@ -179,7 +188,7 @@
         return {};
       });
       if (!r.ok && r.status !== 202) {
-        overlay.hidden = true;
+        hideOverlay();
         alert(j.error || "Не удалось запустить обновление");
         return;
       }
@@ -187,10 +196,13 @@
       /* сеть моргнула — статус всё равно поллим */
     }
 
-    const result = await waitUntilApplyDone(expected, 120);
-    overlay.hidden = true;
+    const result = await waitUntilApplyDone(expected, 160);
+    hideOverlay();
     if (result.ok) {
       location.reload();
+      return;
+    }
+    if (result.message === "Ожидание отменено") {
       return;
     }
     const st = result.status || {};
@@ -200,6 +212,13 @@
         (st.step ? "\nШаг: " + st.step : "") +
         "\nЛог: /opt/nanopi-edge/update.log\nМожно просто обновить страницу (F5)."
     );
+  }
+
+  if (overlayDismiss) {
+    overlayDismiss.addEventListener("click", function () {
+      hideOverlay();
+      location.reload();
+    });
   }
 
   checkBtn.addEventListener("click", checkUpdates);

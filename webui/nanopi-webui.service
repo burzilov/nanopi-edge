@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Не убивать побочные процессы в cgroup (setsid fallback apply).
+KillMode=process
 EnvironmentFile=-/opt/nanopi-edge/.env
 Environment=WEBUI_ENV=/opt/nanopi-edge/.env
 ExecStart=/usr/local/bin/nanopi-webui

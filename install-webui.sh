@@ -103,7 +103,10 @@ install_from_archive() {
   info "Ставлю бинарь → ${BIN_DST}"
   install -m 755 "$bin" "$BIN_DST"
 
-  cat > "$UNIT_DST" <<'EOF'
+  if [[ -n "$unit" && -f "$unit" ]]; then
+    install -m 644 "$unit" "$UNIT_DST"
+  else
+    cat > "$UNIT_DST" <<'EOF'
 [Unit]
 Description=NanoPi sing-box web UI
 After=network-online.target sing-box.service
@@ -111,6 +114,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+KillMode=process
 EnvironmentFile=-/opt/nanopi-edge/.env
 Environment=WEBUI_ENV=/opt/nanopi-edge/.env
 ExecStart=/usr/local/bin/nanopi-webui
@@ -120,7 +124,7 @@ RestartSec=2s
 [Install]
 WantedBy=multi-user.target
 EOF
-  [[ -n "$unit" ]] || true
+  fi
 
   mkdir -p "$OPT_ROOT"
   # скрипт — отдельный ассет релиза; на плате сохраняем копию запускаемого файла
@@ -141,6 +145,11 @@ EOF
     printf '\nWEBUI_GITHUB_REPO=%s\n' "$WEBUI_GITHUB_REPO" >> "$OPT_ENV"
   fi
 
+  # До restart: зафиксировать apply=ok. Иначе при KillMode=cgroup воркер
+  # (--apply-update / setsid) может умереть вместе с панелью, а UI навсегда
+  # останется на «Обновляю WebUI…» (status=running).
+  mark_update_status_ok_before_restart
+
   systemctl daemon-reload
   systemctl enable nanopi-webui
   systemctl restart nanopi-webui
@@ -151,6 +160,27 @@ EOF
   }
   ok "nanopi-webui active"
   rm -rf "$stage"
+}
+
+# Пишет update-status.json state=ok, если идёт фоновый apply.
+mark_update_status_ok_before_restart() {
+  local path="${UPDATE_STATUS_PATH:-$OPT_ROOT/update-status.json}"
+  [[ -f "$path" ]] || return 0
+  grep -q '"state"[[:space:]]*:[[:space:]]*"running"' "$path" 2>/dev/null || return 0
+  local ver=""
+  ver=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$path" | head -1)
+  [[ -n "$ver" ]] || ver="${WEBUI_VERSION:-unknown}"
+  local tmp="${path}.tmp"
+  cat >"$tmp" <<EOF
+{
+  "state": "ok",
+  "version": "$ver",
+  "step": "done",
+  "updated_at": $(date +%s)
+}
+EOF
+  mv -f "$tmp" "$path"
+  ok "update-status → ok (до restart панели)"
 }
 
 smoke_test() {

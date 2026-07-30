@@ -634,8 +634,8 @@ func (s *Server) handleWanForm(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAPIVersion(w http.ResponseWriter, r *http.Request) {
 	edgeVer := s.Env.EdgeVersion
-	if envPath := os.Getenv("WEBUI_ENV"); envPath != "" {
-		if env, err := config.Load(envPath); err == nil && env.EdgeVersion != "" {
+	if env, err := config.Load(config.DefaultEnvPath()); err == nil {
+		if env.EdgeVersion != "" {
 			edgeVer = env.EdgeVersion
 			s.Env.EdgeVersion = env.EdgeVersion
 		}
