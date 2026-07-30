@@ -137,5 +137,30 @@
       </div>
     </form>
   </div>
+
+  <div class="card ports-card">
+    <h2 class="card-title">DNS из дома (hairpin)</h2>
+    <p class="hint">NanoPi подменяет белый IP в ответах DNS на адрес NPM.
+      На Keenetic: DHCP DNS клиентов = <code>10.10.10.1</code> (не сам роутер).
+      Пустое поле — выключить.</p>
+    <form class="ports-form"
+          hx-post="/ports/hairpin"
+          hx-target="#ports-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">LAN IP NPM
+          <input name="target" type="text" value="{{.HairpinTarget}}"
+                 placeholder="192.168.1.137" pattern="^$|^[0-9.]+$">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Сохранить DNS alias</button>
+        </div>
+      </div>
+    </form>
+    <p class="hint ports-hairpin-meta">
+      {{if .HairpinWanIPs}}белый: {{range $i, $ip := .HairpinWanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{else}}белый IP пока нет{{end}}
+      · alias {{if .HairpinActive}}<span class="pill ok">активен</span>{{else}}<span class="pill">выкл</span>{{end}}
+    </p>
+  </div>
 </section>
 {{end}}
