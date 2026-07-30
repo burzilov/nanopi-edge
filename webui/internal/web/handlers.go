@@ -9,16 +9,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"nanopi-webui/internal/clash"
 	"nanopi-webui/internal/config"
 	"nanopi-webui/internal/domains"
-	"nanopi-webui/internal/hairpin"
 	"nanopi-webui/internal/logfmt"
-	"nanopi-webui/internal/portfwd"
+	"nanopi-webui/internal/npmcfg"
 	"nanopi-webui/internal/sbconfig"
 	"nanopi-webui/internal/sysd"
 	"nanopi-webui/internal/update"
@@ -56,13 +54,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /logs/stream", s.handleLogsStream)
 	mux.HandleFunc("GET /domains", s.handleDomainsPage)
 	mux.HandleFunc("POST /domains/save-restart", s.handleDomainsSaveRestart)
-	mux.HandleFunc("GET /ports", s.handlePortsPage)
-	mux.HandleFunc("POST /ports/add", s.handlePortsAdd)
-	mux.HandleFunc("POST /ports/delete", s.handlePortsDelete)
-	mux.HandleFunc("POST /ports/toggle", s.handlePortsToggle)
-	mux.HandleFunc("POST /ports/home-route", s.handlePortsHomeRoute)
-	mux.HandleFunc("POST /ports/hairpin", s.handlePortsHairpin)
-	mux.HandleFunc("GET /api/ports", s.handleAPIPortsGet)
+	mux.HandleFunc("GET /npm", s.handleNPMPage)
+	mux.HandleFunc("POST /npm", s.handleNPMSave)
+	mux.HandleFunc("GET /api/npm", s.handleAPINPMGet)
+	mux.HandleFunc("GET /ports", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/npm", http.StatusFound)
+	})
 	mux.HandleFunc("GET /config", s.handleConfigPage)
 	mux.HandleFunc("POST /config/check", s.handleConfigCheck)
 	mux.HandleFunc("POST /config/save-restart", s.handleConfigSaveRestart)
@@ -315,139 +312,48 @@ func (s *Server) handleDomainsSaveRestart(w http.ResponseWriter, r *http.Request
 	s.render(w, "domains_inner", data)
 }
 
-type portsPageData struct {
-	Rules         []portfwd.Rule
-	HomeNet       string
-	HomeVia       string
-	HairpinTarget string
-	HairpinWanIPs []string
-	HairpinActive bool
-	Message       string
-	Error         string
+type npmPageData struct {
+	npmcfg.Status
+	Message string
+	Error   string
 }
 
-func (s *Server) portsData(msg, errMsg string) portsPageData {
-	d := portsPageData{
-		Message: msg,
-		Error:   errMsg,
-		Rules:   []portfwd.Rule{},
-	}
-	st, err := portfwd.Load()
+func (s *Server) npmData(msg, errMsg string) npmPageData {
+	d := npmPageData{Message: msg, Error: errMsg}
+	st, err := npmcfg.GetStatus()
 	if err != nil {
 		if d.Error == "" {
 			d.Error = err.Error()
 		}
-	} else {
-		d.Rules = st.Rules
-		d.HomeNet = st.HomeNet
-		d.HomeVia = st.HomeVia
+		return d
 	}
-	if hs, err := hairpin.GetStatus(); err != nil {
-		if d.Error == "" {
-			d.Error = err.Error()
-		}
-	} else {
-		d.HairpinTarget = hs.Target
-		d.HairpinWanIPs = hs.WanIPs
-		d.HairpinActive = hs.Active
-	}
+	d.Status = st
 	return d
 }
 
-func (s *Server) handlePortsPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "ports", s.portsData("", ""))
+func (s *Server) handleNPMPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "npm", s.npmData("", ""))
 }
 
-func (s *Server) handlePortsHomeRoute(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleNPMSave(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	_, err := portfwd.SetHomeRoute(r.FormValue("home_net"), r.FormValue("home_via"))
-	if err != nil {
-		s.render(w, "ports_inner", s.portsData("", err.Error()))
+	npmIP := strings.TrimSpace(r.FormValue("npm_ip"))
+	if err := npmcfg.Apply(npmIP); err != nil {
+		s.render(w, "npm_inner", s.npmData("", err.Error()))
 		return
 	}
-	msg := "Маршрут к домашней LAN снят"
-	if strings.TrimSpace(r.FormValue("home_net")) != "" {
-		msg = "Маршрут к домашней LAN применён"
+	msg := "NPM выключен: проброс, маршрут и DNS alias сняты"
+	if npmIP != "" {
+		msg = "NPM включён: 80/443 → " + npmIP + ", DNS alias и маршрут настроены"
 	}
-	s.render(w, "ports_inner", s.portsData(msg, ""))
+	s.render(w, "npm_inner", s.npmData(msg, ""))
 }
 
-func (s *Server) handlePortsHairpin(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	target := strings.TrimSpace(r.FormValue("target"))
-	if err := hairpin.Apply(target); err != nil {
-		s.render(w, "ports_inner", s.portsData("", err.Error()))
-		return
-	}
-	msg := "DNS alias выключен"
-	if target != "" {
-		msg = "DNS alias → " + target + " (клиентам DNS = 10.10.10.1)"
-	}
-	s.render(w, "ports_inner", s.portsData(msg, ""))
-}
-
-func (s *Server) handlePortsAdd(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	wanPort, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("wan_port")))
-	destPort, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("dest_port")))
-	rule := portfwd.Rule{
-		Proto:    r.FormValue("proto"),
-		WanPort:  wanPort,
-		DestIP:   r.FormValue("dest_ip"),
-		DestPort: destPort,
-		Comment:  r.FormValue("comment"),
-	}
-	_, err := portfwd.Add(rule)
-	if err != nil {
-		d := s.portsData("", err.Error())
-		s.render(w, "ports_inner", d)
-		return
-	}
-	s.render(w, "ports_inner", s.portsData("Правило добавлено, nftables обновлён", ""))
-}
-
-func (s *Server) handlePortsDelete(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	_, err := portfwd.Delete(r.FormValue("id"))
-	if err != nil {
-		s.render(w, "ports_inner", s.portsData("", err.Error()))
-		return
-	}
-	s.render(w, "ports_inner", s.portsData("Правило удалено", ""))
-}
-
-func (s *Server) handlePortsToggle(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	enabled := r.FormValue("enabled") == "1"
-	_, err := portfwd.SetEnabled(r.FormValue("id"), enabled)
-	if err != nil {
-		s.render(w, "ports_inner", s.portsData("", err.Error()))
-		return
-	}
-	msg := "Правило выключено"
-	if enabled {
-		msg = "Правило включено"
-	}
-	s.render(w, "ports_inner", s.portsData(msg, ""))
-}
-
-func (s *Server) handleAPIPortsGet(w http.ResponseWriter, r *http.Request) {
-	st, err := portfwd.Load()
+func (s *Server) handleAPINPMGet(w http.ResponseWriter, r *http.Request) {
+	st, err := npmcfg.GetStatus()
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return

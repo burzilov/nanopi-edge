@@ -289,3 +289,19 @@ code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 4px; }
 .ports-toggle { min-width: 2.4rem; padding: 0.3rem 0.45rem; }
 form.inline { display: inline; margin: 0; }
 
+.npm-meta {
+  display: grid;
+  gap: 0.65rem 1.25rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+.npm-meta div { margin: 0; }
+.npm-meta dt {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+.npm-meta dd { margin: 0.25rem 0 0; }
+

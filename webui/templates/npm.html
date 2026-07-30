@@ -1,0 +1,73 @@
+{{define "npm"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NPM — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="npm-main">
+    {{template "npm_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "npm_inner"}}
+<section>
+  <h1>NPM</h1>
+  <p class="hint">Доступ к Nginx Proxy Manager с улицы и из дома.
+    Укажи только IP виртуалки в LAN роутера. Роутер на стороне NanoPi
+    определяется сам. Пустое поле + «Сохранить» — выключить всю обвязку.</p>
+  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
+  {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
+
+  <div class="card ports-card">
+    <form class="ports-form"
+          hx-post="/npm"
+          hx-target="#npm-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">IP NPM в домашней сети
+          <input name="npm_ip" type="text" value="{{.NPMIP}}"
+                 placeholder="192.168.1.137" pattern="^$|^[0-9.]+$"
+                 autocomplete="off">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Сохранить</button>
+        </div>
+      </div>
+    </form>
+
+    <dl class="npm-meta">
+      <div>
+        <dt>Статус</dt>
+        <dd>{{if .Enabled}}<span class="pill ok">вкл</span>{{else}}<span class="pill">выкл</span>{{end}}</dd>
+      </div>
+      <div>
+        <dt>Роутер (авто)</dt>
+        <dd>
+          {{if .RouterIP}}<code>{{.RouterIP}}</code>
+            {{if .RouterOK}}<span class="pill ok">в сети</span>{{else}}<span class="pill">не в ARP</span>{{end}}
+          {{else}}—{{end}}
+        </dd>
+      </div>
+      <div>
+        <dt>Маршрут</dt>
+        <dd>{{if .HomeNet}}<code>{{.HomeNet}}</code> via роутер{{else}}—{{end}}</dd>
+      </div>
+      <div>
+        <dt>DNS из дома</dt>
+        <dd>{{if .HairpinOn}}<span class="pill ok">alias активен</span>{{else}}<span class="pill">выкл</span>{{end}}
+          {{if .WhiteIPs}} · белый {{range $i, $ip := .WhiteIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{end}}
+        </dd>
+      </div>
+    </dl>
+    {{if .Hint}}<p class="hint ports-hairpin-meta">{{.Hint}}</p>{{end}}
+  </div>
+</section>
+{{end}}
