@@ -254,10 +254,10 @@ nanopi_write_hairpin_dns_alias() {
     done < <(ip -4 -o addr show dev "$ifc" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
   done
   if [[ ${#wan_ips[@]} -eq 0 ]]; then
-    cat >"$conf" <<EOF
-# Managed by nanopi-edge — HAIRPIN_DNS_TARGET=${target}
-# WAN IPv4 пока нет; перезапишется после wan-dhcp/wan-pppoe / hairpin-dns-refresh
-EOF
+    printf '%s\n' \
+      "# Managed by nanopi-edge — HAIRPIN_DNS_TARGET=${target}" \
+      "# WAN IPv4 пока нет; перезапишется после wan-dhcp/wan-pppoe / hairpin-dns-refresh" \
+      >"$conf"
     return 0
   fi
   {

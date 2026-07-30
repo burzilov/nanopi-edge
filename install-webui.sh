@@ -22,10 +22,13 @@ WEBUI_GITHUB_REPO="${WEBUI_GITHUB_REPO:-}"
 WEBUI_VERSION="${WEBUI_VERSION:-}"
 ASSET_NAME=nanopi-webui-linux-arm64.tar.gz
 NONINTERACTIVE=0
+_WEBUI_INSTALL_TMP=
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 ok() { echo "    OK: $*"; }
+
+cleanup_tmp() { rm -rf "${_WEBUI_INSTALL_TMP:-}"; }
 
 need_root() { [[ $(id -u) -eq 0 ]] || die "нужен root"; }
 
@@ -193,12 +196,11 @@ EOF
 
   info "repo=${WEBUI_GITHUB_REPO} version=${WEBUI_VERSION:-latest}"
 
-  local tmp
-  tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
+  _WEBUI_INSTALL_TMP=$(mktemp -d)
+  trap cleanup_tmp EXIT
 
-  download_release "$tmp"
-  install_from_archive "$tmp/$ASSET_NAME"
+  download_release "$_WEBUI_INSTALL_TMP"
+  install_from_archive "$_WEBUI_INSTALL_TMP/$ASSET_NAME"
 
   if [[ "$NONINTERACTIVE" -eq 0 ]]; then
     smoke_test
