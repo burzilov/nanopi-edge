@@ -100,6 +100,24 @@ bash install-webui.sh
 На статусе — переключатель WAN DHCP|PPPoE, креды, VLAN; пароль ISP в
 `/etc/ppp/nanopi-wan.secret` (0600). В шапке — версия и «Обновления».
 
+### 4. Домены NPM из домашней LAN (hairpin DNS)
+
+С улицы домены → белый IP (DNAT на NanoPi). Из дома тот же путь ломается
+(пакет приходит на LAN NanoPi, не на WAN). Решение без списка доменов:
+
+1. При `bash install-singbox.sh` спросит LAN IP (или задай в `.env`):
+   ```bash
+   HAIRPIN_DNS_TARGET=192.168.1.137   # IP NPM / Proxmox в LAN роутера
+   /opt/nanopi-edge/scripts/hairpin-dns-refresh
+   ```
+   `NANOPI_YES=1` вопрос пропускает (оставляет уже записанное в `.env`).
+2. На домашнем роутере: DNS для LAN-клиентов = `10.10.10.1`.
+3. dnsmasq на NanoPi пишет `alias=<белый>,<HAIRPIN_DNS_TARGET>` — все A-записи
+   с белым IP локально становятся адресом NPM.
+
+При `router-on` / `wan-dhcp` / `wan-pppoe` alias обновляется сам, если ключ задан.
+Повторная установка **не затирает** уже прописанный `HAIRPIN_DNS_TARGET` в `.env`.
+
 ## Репозиторий
 
 | Путь                 | Назначение                                           |
@@ -112,8 +130,9 @@ bash install-webui.sh
 | `.github/workflows/` | Сборка `nanopi-webui-linux-arm64.tar.gz` на тег `v*` |
 | `VERSION`            | Текущая версия релиза                                |
 
-Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE) в git
-**не** хранятся. Они появляются только на плате при установке / в UI.
+Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE,
+`HAIRPIN_DNS_TARGET`) в git **не** хранятся. Они появляются только на плате
+при установке / в UI / в `.env` на устройстве.
 
 ## Управление на хосте
 
@@ -124,6 +143,7 @@ bash install-webui.sh
 /opt/nanopi-edge/scripts/wan-dhcp
 /opt/nanopi-edge/scripts/wan-pppoe <user> <pass> [vlan]
 /opt/nanopi-edge/scripts/wan-status | jq .
+/opt/nanopi-edge/scripts/hairpin-dns-refresh   # если задан HAIRPIN_DNS_TARGET
 
 # обновить edge (scripts/бинарь; config.json не трогает)
 # NANOPI_YES=1 bash install-singbox.sh

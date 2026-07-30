@@ -17,8 +17,10 @@ import (
 	"nanopi-webui/internal/clash"
 	"nanopi-webui/internal/config"
 	"nanopi-webui/internal/domains"
+	"nanopi-webui/internal/hairpin"
 	"nanopi-webui/internal/logfmt"
 	"nanopi-webui/internal/portfwd"
+	"nanopi-webui/internal/sbconfig"
 	"nanopi-webui/internal/sysd"
 	"nanopi-webui/internal/update"
 	"nanopi-webui/internal/wan"
@@ -59,6 +61,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /ports/add", s.handlePortsAdd)
 	mux.HandleFunc("POST /ports/delete", s.handlePortsDelete)
 	mux.HandleFunc("POST /ports/toggle", s.handlePortsToggle)
+	mux.HandleFunc("POST /ports/hairpin", s.handlePortsHairpin)
 	mux.HandleFunc("GET /api/ports", s.handleAPIPortsGet)
 	mux.HandleFunc("GET /config", s.handleConfigPage)
 	mux.HandleFunc("POST /config/check", s.handleConfigCheck)
@@ -128,20 +131,27 @@ func (s *Server) handleProxySet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	name := r.FormValue("name")
+	name := strings.TrimSpace(r.FormValue("name"))
 	d := s.status()
-	if err := s.Clash.WaitReady(10, 500*time.Millisecond); err != nil {
+	if name == "" {
+		d.Error = "не выбран outbound"
+		s.render(w, "partials/status", d)
+		return
+	}
+	if err := sbconfig.SetSelectorDefault(s.Env.SingboxConfig, "proxy", name); err != nil {
 		d.Error = err.Error()
 		s.render(w, "partials/status", d)
 		return
 	}
-	if err := s.Clash.SetProxy("proxy", name); err != nil {
+	if err := sysd.Restart(s.Env.SingboxUnit); err != nil {
 		d.Error = err.Error()
 		s.render(w, "partials/status", d)
 		return
 	}
+	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
+	_ = s.Clash.WaitReady(20, 500*time.Millisecond)
 	d = s.status()
-	d.Message = "Выбран: " + name
+	d.Message = "VLESS: " + name + " — config сохранён, sing-box перезапущен"
 	s.render(w, "partials/status", d)
 }
 
@@ -305,9 +315,12 @@ func (s *Server) handleDomainsSaveRestart(w http.ResponseWriter, r *http.Request
 }
 
 type portsPageData struct {
-	Rules   []portfwd.Rule
-	Message string
-	Error   string
+	Rules         []portfwd.Rule
+	HairpinTarget string
+	HairpinWanIPs []string
+	HairpinActive bool
+	Message       string
+	Error         string
 }
 
 func (s *Server) portsData(msg, errMsg string) portsPageData {
@@ -317,14 +330,40 @@ func (s *Server) portsData(msg, errMsg string) portsPageData {
 		if d.Error == "" {
 			d.Error = err.Error()
 		}
-		return d
+	} else {
+		d.Rules = st.Rules
 	}
-	d.Rules = st.Rules
+	if hs, err := hairpin.GetStatus(); err != nil {
+		if d.Error == "" {
+			d.Error = err.Error()
+		}
+	} else {
+		d.HairpinTarget = hs.Target
+		d.HairpinWanIPs = hs.WanIPs
+		d.HairpinActive = hs.Active
+	}
 	return d
 }
 
 func (s *Server) handlePortsPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "ports", s.portsData("", ""))
+}
+
+func (s *Server) handlePortsHairpin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	target := strings.TrimSpace(r.FormValue("target"))
+	if err := hairpin.Apply(target); err != nil {
+		s.render(w, "ports_inner", s.portsData("", err.Error()))
+		return
+	}
+	msg := "Hairpin DNS выключен, dnsmasq перезапущен"
+	if target != "" {
+		msg = "Hairpin DNS → " + target + ", dnsmasq перезапущен (DNS клиентов роутера = 10.10.10.1)"
+	}
+	s.render(w, "ports_inner", s.portsData(msg, ""))
 }
 
 func (s *Server) handlePortsAdd(w http.ResponseWriter, r *http.Request) {

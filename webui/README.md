@@ -12,9 +12,13 @@ API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-ppp
 Домены → proxy правятся прямо в `/etc/sing-box/config.json` (правило
 `outbound=proxy` + `domain_suffix`), без отдельного `domains-proxy.json`.
 
-**Проброс портов:** страница `/ports` — DNAT с WAN/ppp0 на IP в LAN.
-Хранение: `/opt/nanopi-edge/port-forwards.json`, nft:
+**Проброс портов:** страница `/ports` — DNAT с WAN/ppp0 на IP в LAN и
+**hairpin DNS** (`HAIRPIN_DNS_TARGET` → dnsmasq alias, restart dnsmasq).
+Хранение правил: `/opt/nanopi-edge/port-forwards.json`, nft:
 `/etc/nftables.d/nanopi-port-forwards.nft` (подключается из `/etc/nftables.conf`).
+
+Смена VLESS на статусе пишет `default` в selector `proxy` в `config.json` и
+перезапускает sing-box.
 
 ## Сборка локально
 

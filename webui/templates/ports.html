@@ -27,6 +27,31 @@
   {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
 
   <div class="card ports-card">
+    <h2 class="card-title">Hairpin DNS</h2>
+    <p class="hint">Из домашней LAN домены с белым IP не заходят через DNAT.
+      dnsmasq подменяет A-записи <code>белый&nbsp;→&nbsp;LAN IP</code> (обычно NPM).
+      На роутере: DNS клиентов = <code>10.10.10.1</code>. Пусто = выключить.</p>
+    <form class="ports-form"
+          hx-post="/ports/hairpin"
+          hx-target="#ports-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">LAN IP (NPM / цель alias)
+          <input name="target" type="text" value="{{.HairpinTarget}}"
+                 placeholder="192.168.1.137" pattern="^$|^[0-9.]+$">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Сохранить и применить</button>
+        </div>
+      </div>
+    </form>
+    <p class="hint ports-hairpin-meta">
+      {{if .HairpinWanIPs}}WAN сейчас: {{range $i, $ip := .HairpinWanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{else}}WAN IPv4 пока нет{{end}}
+      · alias {{if .HairpinActive}}<span class="pill ok">активен</span>{{else}}<span class="pill">выкл</span>{{end}}
+    </p>
+  </div>
+
+  <div class="card ports-card">
     <h2 class="card-title">Правила</h2>
     {{if .Rules}}
     <div class="ports-table-wrap">

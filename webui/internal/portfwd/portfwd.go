@@ -351,6 +351,8 @@ func ReloadNftables() error {
 		}
 		return fmt.Errorf("nft -f %s: %w\n%s", conf, err, msg)
 	}
+	// /etc/nftables.conf начинается с flush ruleset — сносит auto_redirect sing-box.
+	_ = exec.Command("systemctl", "try-reload-or-restart", "sing-box").Run()
 	return nil
 }
 
