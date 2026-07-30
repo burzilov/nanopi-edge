@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -17,6 +18,8 @@ const (
 	WebUIArchiveAsset = "nanopi-webui-linux-arm64.tar.gz"
 	WebUIScriptAsset  = "install-webui.sh"
 	EdgeScriptAsset   = "install-singbox.sh"
+	DefaultStatusPath = "/opt/nanopi-edge/update-status.json"
+	DefaultUpdateLog  = "/opt/nanopi-edge/update.log"
 )
 
 // Legacy name used in older messages / checks for the binary archive.
@@ -44,6 +47,15 @@ type CheckResult struct {
 	Edge            ComponentStatus `json:"edge"`
 }
 
+// ApplyStatus — прогресс фонового обновления (файл на диске, переживает рестарт webui).
+type ApplyStatus struct {
+	State     string `json:"state"` // idle | running | ok | error
+	Version   string `json:"version,omitempty"`
+	Step      string `json:"step,omitempty"` // starting | edge | webui | done
+	Error     string `json:"error,omitempty"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 type ghRelease struct {
 	TagName string `json:"tag_name"`
 	Name    string `json:"name"`
@@ -53,6 +65,56 @@ type ghRelease struct {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`
 	} `json:"assets"`
+}
+
+func StatusPath() string {
+	if v := os.Getenv("UPDATE_STATUS_PATH"); v != "" {
+		return v
+	}
+	return DefaultStatusPath
+}
+
+func UpdateLogPath() string {
+	if v := os.Getenv("UPDATE_LOG_PATH"); v != "" {
+		return v
+	}
+	return DefaultUpdateLog
+}
+
+func WriteStatus(st ApplyStatus) error {
+	st.UpdatedAt = time.Now().Unix()
+	path := StatusPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func ReadStatus() (ApplyStatus, error) {
+	var st ApplyStatus
+	b, err := os.ReadFile(StatusPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ApplyStatus{State: "idle"}, nil
+		}
+		return st, err
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return st, err
+	}
+	if st.State == "" {
+		st.State = "idle"
+	}
+	return st, nil
 }
 
 func Normalize(v string) string {
@@ -181,8 +243,6 @@ func Check(repo, webuiCurrent, edgeCurrent string) (CheckResult, error) {
 	if !out.Edge.AssetOK {
 		out.Edge.Error = fmt.Sprintf("нет ассета %s", EdgeScriptAsset)
 	} else if edgeCurrent == "" || edgeCurrent == "unknown" {
-		// Не считаем «есть обновление» — иначе кнопка всегда горит при пустом EDGE_VERSION,
-		// хотя WebUI уже на latest, и apply просто переустановит тот же tag.
 		out.Edge.UpdateAvailable = false
 		out.Edge.Error = "EDGE_VERSION не задан в .env (появится после обновления с новым релизом)"
 	} else {
@@ -304,7 +364,7 @@ func Apply(scriptPath, repo, version string) error {
 	return ApplyWebUI(scriptPath, repo, version)
 }
 
-// ApplyAll: качает оба скрипта, сначала edge, затем webui (рестарт панели последним).
+// ApplyAll: edge, затем webui; пишет ApplyStatus на каждом шаге.
 func ApplyAll(repo, version, edgeScript, webuiScript string) error {
 	if repo == "" {
 		return fmt.Errorf("WEBUI_GITHUB_REPO пуст")
@@ -312,11 +372,89 @@ func ApplyAll(repo, version, edgeScript, webuiScript string) error {
 	if version == "" {
 		return fmt.Errorf("нужен version (tag)")
 	}
+	_ = WriteStatus(ApplyStatus{State: "running", Version: version, Step: "edge"})
 	if err := ApplyEdge(repo, version, edgeScript); err != nil {
+		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "edge", Error: err.Error()})
 		return fmt.Errorf("edge: %w", err)
 	}
+	_ = WriteStatus(ApplyStatus{State: "running", Version: version, Step: "webui"})
 	if err := ApplyWebUI(webuiScript, repo, version); err != nil {
+		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "webui", Error: err.Error()})
 		return fmt.Errorf("webui: %w", err)
 	}
+	_ = WriteStatus(ApplyStatus{State: "ok", Version: version, Step: "done"})
 	return nil
+}
+
+// StartDetachedApply запускает apply в отдельной сессии (переживает systemctl restart webui).
+func StartDetachedApply(selfBin, repo, version, edgeScript, webuiScript string) error {
+	if selfBin == "" {
+		var err error
+		selfBin, err = os.Executable()
+		if err != nil {
+			return err
+		}
+	}
+	if err := WriteStatus(ApplyStatus{State: "running", Version: version, Step: "starting"}); err != nil {
+		return err
+	}
+	logPath := UpdateLogPath()
+	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(selfBin, "--apply-update", version)
+	cmd.Env = append(os.Environ(),
+		"WEBUI_GITHUB_REPO="+repo,
+		"EDGE_INSTALL_SCRIPT="+edgeScript,
+		"WEBUI_INSTALL_SCRIPT="+webuiScript,
+	)
+	if v := os.Getenv("WEBUI_ENV"); v != "" {
+		cmd.Env = append(cmd.Env, "WEBUI_ENV="+v)
+	}
+	cmd.Stdout = logf
+	cmd.Stderr = logf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		_ = logf.Close()
+		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "starting", Error: err.Error()})
+		return err
+	}
+	_ = logf.Close()
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+// RunApplyUpdateCLI — точка входа `nanopi-webui --apply-update <tag>`.
+func RunApplyUpdateCLI(version string) int {
+	repo := os.Getenv("WEBUI_GITHUB_REPO")
+	edgeScript := os.Getenv("EDGE_INSTALL_SCRIPT")
+	webuiScript := os.Getenv("WEBUI_INSTALL_SCRIPT")
+	if edgeScript == "" {
+		edgeScript = "/opt/nanopi-edge/install-singbox.sh"
+	}
+	if webuiScript == "" {
+		webuiScript = "/opt/nanopi-edge/install-webui.sh"
+	}
+	if repo == "" {
+		envPath := os.Getenv("WEBUI_ENV")
+		if envPath == "" {
+			envPath = "/opt/nanopi-edge/.env"
+		}
+		if b, err := os.ReadFile(envPath); err == nil {
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "WEBUI_GITHUB_REPO=") {
+					repo = strings.Trim(strings.TrimPrefix(line, "WEBUI_GITHUB_REPO="), `"'`)
+				}
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "apply-update %s repo=%s\n", version, repo)
+	if err := ApplyAll(repo, version, edgeScript, webuiScript); err != nil {
+		fmt.Fprintf(os.Stderr, "apply-update failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "apply-update ok: %s\n", version)
+	return 0
 }

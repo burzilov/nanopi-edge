@@ -41,7 +41,9 @@ WEBUI_VERSION=v0.0.2 bash install-webui.sh --noninteractive
 
 В панели на статусе: «Проверить обновления» → при наличии релиза — «Обновить»
 (скачивает `install-singbox.sh` и `install-webui.sh` из ассетов, запускает
-по очереди: edge → webui).
+в **отдельном процессе**: edge → webui). Страница перезагружается только когда
+`/api/updates/status` = ok и обе версии (webui + EDGE_VERSION) совпали с тегом.
+Прогресс: `GET /api/updates/status`, лог: `/opt/nanopi-edge/update.log`.
 
 Или вручную после сборки на хосте:
 

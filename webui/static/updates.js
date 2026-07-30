@@ -7,6 +7,7 @@
   const checkBtn = document.getElementById("btn-check-updates");
   const overlay = document.getElementById("update-overlay");
   const overlayTitle = document.getElementById("update-overlay-title");
+  const overlayStep = document.getElementById("update-overlay-step");
   if (!dialog || !checkBtn) return;
 
   let pendingTag = "";
@@ -20,6 +21,25 @@
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
     });
+  }
+
+  function normVer(v) {
+    return String(v || "").replace(/^v/, "");
+  }
+
+  function stepLabel(step) {
+    switch (step) {
+      case "starting":
+        return "Запуск…";
+      case "edge":
+        return "Обновляю edge (sing-box / scripts)…";
+      case "webui":
+        return "Обновляю WebUI…";
+      case "done":
+        return "Готово";
+      default:
+        return step ? String(step) : "Обновление…";
+    }
   }
 
   async function checkUpdates() {
@@ -63,28 +83,70 @@
     }
   }
 
-  function normVer(v) {
-    return String(v || "").replace(/^v/, "");
+  async function waitUntilApplyDone(expected, tries) {
+    let lastStatus = null;
+    for (let i = 0; i < tries; i++) {
+      await sleep(2000);
+      try {
+        const r = await fetch("/api/updates/status", { cache: "no-store" });
+        if (!r.ok) continue;
+        const st = await r.json();
+        lastStatus = st;
+        if (overlayStep) {
+          overlayStep.textContent = stepLabel(st.step) +
+            (st.version ? " → " + st.version : "");
+        }
+        if (st.state === "error") {
+          return { ok: false, status: st };
+        }
+        if (st.state === "ok" && normVer(st.version) === normVer(expected)) {
+          // дождаться, пока новая панель отдаст обе версии
+          const ver = await waitForBothVersions(expected, 30);
+          if (ver.matched) {
+            return { ok: true, status: st, version: ver };
+          }
+          return {
+            ok: false,
+            status: st,
+            version: ver,
+            message:
+              "Apply завершён, но /api/version ещё не совпал (webui/edge).",
+          };
+        }
+      } catch (_) {
+        if (overlayStep) {
+          overlayStep.textContent = "Панель перезапускается…";
+        }
+      }
+    }
+    return { ok: false, status: lastStatus, message: "Таймаут ожидания apply" };
   }
 
-  async function waitForVersion(expected, tries) {
+  async function waitForBothVersions(expected, tries) {
     let last = null;
     for (let i = 0; i < tries; i++) {
-      await sleep(2500);
+      await sleep(2000);
       try {
         const r = await fetch("/api/version", { cache: "no-store" });
         if (!r.ok) continue;
         const j = await r.json();
-        if (!j.version) continue;
-        last = j.version;
-        if (!expected || normVer(j.version) === normVer(expected)) {
-          return { version: j.version, matched: true };
+        last = j;
+        const webuiOk = normVer(j.version) === normVer(expected);
+        const edgeOk =
+          !!j.edge_version &&
+          normVer(j.edge_version) === normVer(expected);
+        if (webuiOk && edgeOk) {
+          return { matched: true, version: j.version, edge: j.edge_version };
         }
       } catch (_) {
-        /* панель ещё лежит после webui */
+        /* ещё лежит */
       }
     }
-    return { version: last, matched: false };
+    return {
+      matched: false,
+      version: last && last.version,
+      edge: last && last.edge_version,
+    };
   }
 
   async function applyUpdate() {
@@ -93,7 +155,7 @@
       !confirm(
         "Обновить до " +
           pendingTag +
-          "?\n\nСначала edge (scripts/sing-box), затем WebUI.\nconfig.json не пересобирается."
+          "?\n\nСначала edge, затем WebUI.\nСтраница обновится только когда оба компонента будут на этой версии."
       )
     ) {
       return;
@@ -103,35 +165,40 @@
     if (overlayTitle) {
       overlayTitle.textContent = "Обновляю до " + pendingTag + "…";
     }
+    if (overlayStep) {
+      overlayStep.textContent = "Запуск…";
+    }
     const expected = pendingTag;
     try {
-      await fetch("/api/updates/apply", {
+      const r = await fetch("/api/updates/apply", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ version: pendingTag }),
       });
+      const j = await r.json().catch(function () {
+        return {};
+      });
+      if (!r.ok && r.status !== 202) {
+        overlay.hidden = true;
+        alert(j.error || "Не удалось запустить обновление");
+        return;
+      }
     } catch (_) {
-      /* обрыв при рестарте webui — ожидаемо */
+      /* сеть моргнула — статус всё равно поллим */
     }
-    const result = await waitForVersion(expected, 60);
+
+    const result = await waitUntilApplyDone(expected, 120);
     overlay.hidden = true;
-    if (result.matched) {
+    if (result.ok) {
       location.reload();
       return;
     }
-    if (result.version) {
-      alert(
-        "Панель отвечает как " +
-          result.version +
-          ", ожидали " +
-          expected +
-          ".\nЕсли версии совпадали до обновления — на GitHub ещё нет более нового релиза."
-      );
-      location.reload();
-      return;
-    }
+    const st = result.status || {};
     alert(
-      "Панель долго не отвечает. Проверь: systemctl status nanopi-webui sing-box"
+      (result.message || "Обновление не завершилось") +
+        (st.error ? "\n" + st.error : "") +
+        (st.step ? "\nШаг: " + st.step : "") +
+        "\nЛог: /opt/nanopi-edge/update.log"
     );
   }
 

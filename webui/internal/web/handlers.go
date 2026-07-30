@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -68,6 +67,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /config/save-restart", s.handleConfigSaveRestart)
 	mux.HandleFunc("GET /api/version", s.handleAPIVersion)
 	mux.HandleFunc("GET /api/updates/check", s.handleAPIUpdatesCheck)
+	mux.HandleFunc("GET /api/updates/status", s.handleAPIUpdatesStatus)
 	mux.HandleFunc("POST /api/updates/apply", s.handleAPIUpdatesApply)
 	mux.HandleFunc("GET /api/wan", s.handleAPIWanGet)
 	mux.HandleFunc("POST /api/wan", s.handleAPIWanPost)
@@ -646,6 +646,15 @@ type applyReq struct {
 	Version string `json:"version"`
 }
 
+func (s *Server) handleAPIUpdatesStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := update.ReadStatus()
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, st)
+}
+
 func (s *Server) handleAPIUpdatesApply(w http.ResponseWriter, r *http.Request) {
 	var req applyReq
 	_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req)
@@ -659,28 +668,28 @@ func (s *Server) handleAPIUpdatesApply(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// Сразу отвечаем: edge, затем webui (рестарт оборвёт соединение).
-	s.writeJSON(w, http.StatusAccepted, map[string]any{
-		"ok":         true,
-		"restarting": true,
-		"version":    req.Version,
-		"message":    "Фон: install-singbox.sh, затем install-webui.sh",
-	})
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
+	if cur, err := update.ReadStatus(); err == nil && cur.State == "running" {
+		s.writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   "обновление уже выполняется",
+			"status":  cur,
+			"version": cur.Version,
+		})
+		return
 	}
-	repo := s.Env.GithubRepo
-	edgeScript := s.Env.InstallEdge
-	webuiScript := s.Env.InstallWebUI
-	ver := req.Version
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		if err := update.ApplyAll(repo, ver, edgeScript, webuiScript); err != nil {
-			log.Printf("update apply-all failed: %v", err)
-			return
-		}
-		log.Printf("update apply-all ok: %s", ver)
-	}()
+	self, err := os.Executable()
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := update.StartDetachedApply(self, s.Env.GithubRepo, req.Version, s.Env.InstallEdge, s.Env.InstallWebUI); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":      true,
+		"version": req.Version,
+		"message": "Фон (detached): edge, затем webui. Статус: GET /api/updates/status",
+	})
 }
 
 func (s *Server) render(w http.ResponseWriter, name string, data any) {

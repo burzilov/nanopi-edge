@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"nanopi-webui/internal/clash"
 	"nanopi-webui/internal/config"
+	"nanopi-webui/internal/update"
 	"nanopi-webui/internal/web"
 )
 
@@ -23,6 +25,13 @@ var tmplFS embed.FS
 var staticFS embed.FS
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "--apply-update" {
+		if len(os.Args) < 3 || strings.TrimSpace(os.Args[2]) == "" {
+			log.Fatal("usage: nanopi-webui --apply-update <tag>")
+		}
+		os.Exit(update.RunApplyUpdateCLI(os.Args[2]))
+	}
+
 	envPath := "/opt/nanopi-edge/.env"
 	if v := os.Getenv("WEBUI_ENV"); v != "" {
 		envPath = v
