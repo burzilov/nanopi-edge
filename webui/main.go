@@ -61,6 +61,8 @@ func main() {
 		Version:  Version,
 	}
 
+	update.ClearStaleRunning()
+
 	addr := env.Listen
 	log.Printf("nanopi-webui %s listening on http://%s/", Version, addr)
 	if err := http.ListenAndServe(addr, srv.Routes()); err != nil {

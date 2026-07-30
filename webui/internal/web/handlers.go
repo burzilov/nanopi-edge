@@ -700,7 +700,8 @@ func (s *Server) handleAPIUpdatesApply(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if cur, err := update.ReadStatus(); err == nil && cur.State == "running" {
+	update.ClearStaleRunning()
+	if cur, busy := update.InProgress(); busy {
 		s.writeJSON(w, http.StatusConflict, map[string]any{
 			"error":   "обновление уже выполняется",
 			"status":  cur,
