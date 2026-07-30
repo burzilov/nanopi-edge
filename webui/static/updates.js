@@ -43,6 +43,9 @@
       detailEl.textContent =
         "Сейчас: WebUI " + webuiCur + ", Edge " + edgeCur;
       detailEl.hidden = false;
+      if (j.edge && j.edge.error) {
+        detailEl.textContent += "\n" + j.edge.error;
+      }
 
       if (j.update_available) {
         pendingTag = j.latest;
@@ -60,7 +63,12 @@
     }
   }
 
+  function normVer(v) {
+    return String(v || "").replace(/^v/, "");
+  }
+
   async function waitForVersion(expected, tries) {
+    let last = null;
     for (let i = 0; i < tries; i++) {
       await sleep(2500);
       try {
@@ -68,19 +76,15 @@
         if (!r.ok) continue;
         const j = await r.json();
         if (!j.version) continue;
-        if (
-          !expected ||
-          j.version === expected ||
-          j.version.replace(/^v/, "") === String(expected).replace(/^v/, "")
-        ) {
-          return j.version;
+        last = j.version;
+        if (!expected || normVer(j.version) === normVer(expected)) {
+          return { version: j.version, matched: true };
         }
-        if (i > 3) return j.version;
       } catch (_) {
         /* панель ещё лежит после webui */
       }
     }
-    return null;
+    return { version: last, matched: false };
   }
 
   async function applyUpdate() {
@@ -109,15 +113,26 @@
     } catch (_) {
       /* обрыв при рестарте webui — ожидаемо */
     }
-    const ver = await waitForVersion(expected, 60);
+    const result = await waitForVersion(expected, 60);
     overlay.hidden = true;
-    if (ver) {
+    if (result.matched) {
       location.reload();
-    } else {
-      alert(
-        "Панель долго не отвечает. Проверь: systemctl status nanopi-webui sing-box"
-      );
+      return;
     }
+    if (result.version) {
+      alert(
+        "Панель отвечает как " +
+          result.version +
+          ", ожидали " +
+          expected +
+          ".\nЕсли версии совпадали до обновления — на GitHub ещё нет более нового релиза."
+      );
+      location.reload();
+      return;
+    }
+    alert(
+      "Панель долго не отвечает. Проверь: systemctl status nanopi-webui sing-box"
+    );
   }
 
   checkBtn.addEventListener("click", checkUpdates);

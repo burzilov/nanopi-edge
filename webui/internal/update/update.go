@@ -181,7 +181,10 @@ func Check(repo, webuiCurrent, edgeCurrent string) (CheckResult, error) {
 	if !out.Edge.AssetOK {
 		out.Edge.Error = fmt.Sprintf("нет ассета %s", EdgeScriptAsset)
 	} else if edgeCurrent == "" || edgeCurrent == "unknown" {
-		out.Edge.UpdateAvailable = true
+		// Не считаем «есть обновление» — иначе кнопка всегда горит при пустом EDGE_VERSION,
+		// хотя WebUI уже на latest, и apply просто переустановит тот же tag.
+		out.Edge.UpdateAvailable = false
+		out.Edge.Error = "EDGE_VERSION не задан в .env (появится после обновления с новым релизом)"
 	} else {
 		out.Edge.UpdateAvailable = CompareSemver(edgeCurrent, rel.TagName) < 0
 	}
