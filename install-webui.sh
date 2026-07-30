@@ -124,8 +124,16 @@ EOF
 
   mkdir -p "$OPT_ROOT"
   # скрипт — отдельный ассет релиза; на плате сохраняем копию запускаемого файла
+  # (если уже запущен из SCRIPT_DST — не трогаем: install src==dst → exit 1)
   if [[ -f "${BASH_SOURCE[0]}" ]]; then
-    install -m 755 "${BASH_SOURCE[0]}" "$SCRIPT_DST"
+    local src_abs dst_abs
+    src_abs=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")
+    dst_abs=$(readlink -f "$SCRIPT_DST" 2>/dev/null || realpath "$SCRIPT_DST" 2>/dev/null || echo "$SCRIPT_DST")
+    if [[ "$src_abs" != "$dst_abs" ]]; then
+      install -m 755 "${BASH_SOURCE[0]}" "$SCRIPT_DST"
+    else
+      chmod 755 "$SCRIPT_DST" 2>/dev/null || true
+    fi
   fi
 
   # дописать WEBUI_GITHUB_REPO в .env только если вызывающий явно передал репо
