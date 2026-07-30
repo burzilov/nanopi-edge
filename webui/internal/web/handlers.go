@@ -61,6 +61,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /ports/delete", s.handlePortsDelete)
 	mux.HandleFunc("POST /ports/toggle", s.handlePortsToggle)
 	mux.HandleFunc("POST /ports/hairpin", s.handlePortsHairpin)
+	mux.HandleFunc("POST /ports/lan-hairpin", s.handlePortsLanHairpin)
 	mux.HandleFunc("GET /api/ports", s.handleAPIPortsGet)
 	mux.HandleFunc("GET /config", s.handleConfigPage)
 	mux.HandleFunc("POST /config/check", s.handleConfigCheck)
@@ -316,6 +317,9 @@ func (s *Server) handleDomainsSaveRestart(w http.ResponseWriter, r *http.Request
 
 type portsPageData struct {
 	Rules         []portfwd.Rule
+	LanHairpin    bool
+	HomeNet       string
+	HomeVia       string
 	HairpinTarget string
 	HairpinWanIPs []string
 	HairpinActive bool
@@ -324,7 +328,12 @@ type portsPageData struct {
 }
 
 func (s *Server) portsData(msg, errMsg string) portsPageData {
-	d := portsPageData{Message: msg, Error: errMsg, Rules: []portfwd.Rule{}}
+	d := portsPageData{
+		Message: msg,
+		Error:   errMsg,
+		Rules:   []portfwd.Rule{},
+		HomeNet: "192.168.1.0/24",
+	}
 	st, err := portfwd.Load()
 	if err != nil {
 		if d.Error == "" {
@@ -332,6 +341,11 @@ func (s *Server) portsData(msg, errMsg string) portsPageData {
 		}
 	} else {
 		d.Rules = st.Rules
+		d.LanHairpin = st.LanHairpin
+		if st.HomeNet != "" {
+			d.HomeNet = st.HomeNet
+		}
+		d.HomeVia = st.HomeVia
 	}
 	if hs, err := hairpin.GetStatus(); err != nil {
 		if d.Error == "" {
@@ -349,6 +363,24 @@ func (s *Server) handlePortsPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "ports", s.portsData("", ""))
 }
 
+func (s *Server) handlePortsLanHairpin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	enabled := r.FormValue("enabled") == "1"
+	_, err := portfwd.SetLanHairpin(enabled, r.FormValue("home_net"), r.FormValue("home_via"))
+	if err != nil {
+		s.render(w, "ports_inner", s.portsData("", err.Error()))
+		return
+	}
+	msg := "Доступ из дома по белому IP выключен"
+	if enabled {
+		msg = "Доступ из дома по белому IP включён (маршрут + nft). Dest в правилах = IP NPM (192.168.x.x)"
+	}
+	s.render(w, "ports_inner", s.portsData(msg, ""))
+}
+
 func (s *Server) handlePortsHairpin(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -359,9 +391,9 @@ func (s *Server) handlePortsHairpin(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "ports_inner", s.portsData("", err.Error()))
 		return
 	}
-	msg := "Hairpin DNS выключен, dnsmasq перезапущен"
+	msg := "DNS alias выключен"
 	if target != "" {
-		msg = "Hairpin DNS → " + target + ", dnsmasq перезапущен (DNS клиентов роутера = 10.10.10.1)"
+		msg = "DNS alias → " + target
 	}
 	s.render(w, "ports_inner", s.portsData(msg, ""))
 }

@@ -1,53 +1,42 @@
-{{define "ports"}}
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Проброс портов — NanoPi edge</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/htmx.min.js" defer></script>
-</head>
-<body>
-  {{template "nav" .}}
-  <main id="ports-main">
-    {{template "ports_inner" .}}
-  </main>
-</body>
-</html>
-{{end}}
-
 {{define "ports_inner"}}
 <section>
   <h1>Проброс портов</h1>
-  <p class="hint">DNAT с WAN NanoPi (белый IP) на хост в LAN. Правила только на входящих с
-    WAN/ppp0 — WebUI на <code>10.10.10.1:80</code> не перехватывается.
-    Для NPM: <code>80</code> и <code>443</code> → IP виртуалки (или WAN роутера, если проброс ещё на нём).</p>
+  <p class="hint">Куда слать входящие <strong>80/443</strong> с белого IP. Для NPM указывай
+    IP виртуалки в домашней сети (<code>192.168.1.137</code>), не WAN роутера.</p>
   {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
   {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
 
   <div class="card ports-card">
-    <h2 class="card-title">Hairpin DNS</h2>
-    <p class="hint">Из домашней LAN домены с белым IP не заходят через DNAT.
-      dnsmasq подменяет A-записи <code>белый&nbsp;→&nbsp;LAN IP</code> (обычно NPM).
-      На роутере: DNS клиентов = <code>10.10.10.1</code>. Пусто = выключить.</p>
+    <h2 class="card-title">Доступ из дома по белому IP</h2>
+    <p class="hint">Нужно, если домен резолвится в белый IP (так делает корпоративный VPN).
+      NanoPi сам перекинет запрос на NPM. Без галочки из дома по белому IP не открыть.</p>
     <form class="ports-form"
-          hx-post="/ports/hairpin"
+          hx-post="/ports/lan-hairpin"
           hx-target="#ports-main"
           hx-swap="innerHTML">
       <div class="row">
-        <label class="grow">LAN IP (NPM / цель alias)
-          <input name="target" type="text" value="{{.HairpinTarget}}"
-                 placeholder="192.168.1.137" pattern="^$|^[0-9.]+$">
+        <label class="grow">
+          <input type="checkbox" name="enabled" value="1" {{if .LanHairpin}}checked{{end}}>
+          Включить
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow">Домашняя сеть (за роутером)
+          <input name="home_net" type="text" value="{{.HomeNet}}"
+                 placeholder="192.168.1.0/24" pattern="^[0-9./]+$">
+        </label>
+        <label class="grow">WAN роутера на стороне NanoPi
+          <input name="home_via" type="text" value="{{.HomeVia}}"
+                 placeholder="10.10.10.179" pattern="^[0-9.]+$">
         </label>
         <div class="ports-add-actions">
-          <button type="submit">Сохранить и применить</button>
+          <button type="submit">Сохранить</button>
         </div>
       </div>
     </form>
     <p class="hint ports-hairpin-meta">
-      {{if .HairpinWanIPs}}WAN сейчас: {{range $i, $ip := .HairpinWanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{else}}WAN IPv4 пока нет{{end}}
-      · alias {{if .HairpinActive}}<span class="pill ok">активен</span>{{else}}<span class="pill">выкл</span>{{end}}
+      {{if .HairpinWanIPs}}Белый IP сейчас: {{range $i, $ip := .HairpinWanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{else}}Белый IP пока нет{{end}}
+      · {{if .LanHairpin}}<span class="pill ok">вкл</span>{{else}}<span class="pill">выкл</span>{{end}}
     </p>
   </div>
 
@@ -122,8 +111,8 @@
         <label class="ports-port">WAN-порт
           <input name="wan_port" type="number" min="1" max="65535" required placeholder="443">
         </label>
-        <label class="grow">IP назначения
-          <input name="dest_ip" type="text" required placeholder="10.10.10.50" pattern="^[0-9.]+$">
+        <label class="grow">IP назначения (NPM)
+          <input name="dest_ip" type="text" required placeholder="192.168.1.137" pattern="^[0-9.]+$">
         </label>
         <label class="ports-port">Порт
           <input name="dest_port" type="number" min="1" max="65535" required placeholder="443">
@@ -139,5 +128,28 @@
       </div>
     </form>
   </div>
+
+  <details class="ports-card card">
+    <summary class="card-title">Дополнительно: подмена DNS (без VPN)</summary>
+    <p class="hint">Если VPN выключен и клиенты используют DNS <code>10.10.10.1</code>,
+      dnsmasq может подменять белый IP на адрес NPM. При включённом корп. VPN обычно не помогает.</p>
+    <form class="ports-form"
+          hx-post="/ports/hairpin"
+          hx-target="#ports-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">LAN IP для alias
+          <input name="target" type="text" value="{{.HairpinTarget}}"
+                 placeholder="192.168.1.137" pattern="^$|^[0-9.]+$">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Сохранить DNS alias</button>
+        </div>
+      </div>
+    </form>
+    <p class="hint ports-hairpin-meta">
+      alias {{if .HairpinActive}}<span class="pill ok">активен</span>{{else}}<span class="pill">выкл</span>{{end}}
+    </p>
+  </details>
 </section>
 {{end}}
