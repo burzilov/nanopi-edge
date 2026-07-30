@@ -12,11 +12,9 @@ API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-ppp
 Домены → proxy правятся прямо в `/etc/sing-box/config.json` (правило
 `outbound=proxy` + `domain_suffix`), без отдельного `domains-proxy.json`.
 
-**Проброс портов:** страница `/ports` — DNAT с WAN/ppp0 и опционально
-**DNS hairpin** (`HAIRPIN_DNS_TARGET` → dnsmasq alias; DNS клиентов = `10.10.10.1`).
-Если dest за CPE — маршрут home_net/home_via.
-Хранение: `/opt/nanopi-edge/port-forwards.json`, nft:
-`/etc/nftables.d/nanopi-port-forwards.nft`.
+**NPM:** страница `/npm` — IP виртуалки в домашней LAN; NanoPi сам ставит
+DNAT 80/443, маршрут за CPE и DNS hairpin. Пустое сохранение всё снимает.
+На Keenetic: DNS = `10.10.10.1`, МЭ с `10.10.10.0/24` на NPM.
 
 Смена VLESS на статусе пишет `default` в selector `proxy` в `config.json` и
 перезапускает sing-box.
