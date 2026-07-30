@@ -386,18 +386,19 @@ func ApplyAll(repo, version, edgeScript, webuiScript string) error {
 		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "edge", Error: err.Error()})
 		return fmt.Errorf("edge: %w", err)
 	}
+	// Метку пишем до рестарта webui — если worker убьют на restart, EDGE_VERSION уже верная.
+	_ = config.SetKV(config.DefaultEnvPath(), "EDGE_VERSION", version)
 	_ = WriteStatus(ApplyStatus{State: "running", Version: version, Step: "webui"})
 	if err := ApplyWebUI(webuiScript, repo, version); err != nil {
 		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "webui", Error: err.Error()})
 		return fmt.Errorf("webui: %w", err)
 	}
-	// На случай если install-singbox не дописал метку — фиксируем оба компонента на tag релиза.
 	_ = config.SetKV(config.DefaultEnvPath(), "EDGE_VERSION", version)
 	_ = WriteStatus(ApplyStatus{State: "ok", Version: version, Step: "done"})
 	return nil
 }
 
-// StartDetachedApply запускает apply в отдельной сессии (переживает systemctl restart webui).
+// StartDetachedApply запускает apply вне cgroup webui (systemd-run), иначе restart панели убивает worker.
 func StartDetachedApply(selfBin, repo, version, edgeScript, webuiScript string) error {
 	if selfBin == "" {
 		var err error
@@ -410,30 +411,60 @@ func StartDetachedApply(selfBin, repo, version, edgeScript, webuiScript string) 
 		return err
 	}
 	logPath := UpdateLogPath()
+	env := []string{
+		"WEBUI_GITHUB_REPO=" + repo,
+		"EDGE_INSTALL_SCRIPT=" + edgeScript,
+		"WEBUI_INSTALL_SCRIPT=" + webuiScript,
+	}
+	if v := os.Getenv("WEBUI_ENV"); v != "" {
+		env = append(env, "WEBUI_ENV="+v)
+	}
+
+	// Предпочтительно systemd-run — отдельный transient unit, не в cgroup nanopi-webui.
+	args := []string{
+		"--collect",
+		"--unit=nanopi-edge-update",
+		"--property=Type=oneshot",
+		"--property=RemainAfterExit=no",
+	}
+	for _, e := range env {
+		args = append(args, "--setenv="+e)
+	}
+	args = append(args, selfBin, "--apply-update", version)
+	cmd := exec.Command("systemd-run", args...)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		_ = appendUpdateLog(fmt.Sprintf("systemd-run ok: %s\n", strings.TrimSpace(string(out))))
+		return nil
+	}
+
+	// Fallback: setsid (на некоторых системах всё ещё в cgroup сервиса).
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(selfBin, "--apply-update", version)
-	cmd.Env = append(os.Environ(),
-		"WEBUI_GITHUB_REPO="+repo,
-		"EDGE_INSTALL_SCRIPT="+edgeScript,
-		"WEBUI_INSTALL_SCRIPT="+webuiScript,
-	)
-	if v := os.Getenv("WEBUI_ENV"); v != "" {
-		cmd.Env = append(cmd.Env, "WEBUI_ENV="+v)
-	}
-	cmd.Stdout = logf
-	cmd.Stderr = logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
+	cmd2 := exec.Command(selfBin, "--apply-update", version)
+	cmd2.Env = append(os.Environ(), env...)
+	cmd2.Stdout = logf
+	cmd2.Stderr = logf
+	cmd2.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd2.Start(); err != nil {
 		_ = logf.Close()
 		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "starting", Error: err.Error()})
 		return err
 	}
 	_ = logf.Close()
-	go func() { _ = cmd.Wait() }()
+	go func() { _ = cmd2.Wait() }()
 	return nil
+}
+
+func appendUpdateLog(line string) error {
+	f, err := os.OpenFile(UpdateLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line)
+	return err
 }
 
 // RunApplyUpdateCLI — точка входа `nanopi-webui --apply-update <tag>`.
