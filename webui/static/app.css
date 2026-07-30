@@ -286,6 +286,5 @@ code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 4px; }
 .ports-port { flex: 0 0 7rem; }
 .ports-add-actions { display: flex; align-items: flex-end; }
 .ports-toggle { min-width: 2.4rem; padding: 0.3rem 0.45rem; }
-.ports-hairpin-meta { margin-top: 0.75rem; margin-bottom: 0; }
 form.inline { display: inline; margin: 0; }
 

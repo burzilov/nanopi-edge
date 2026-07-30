@@ -32,13 +32,12 @@ type Rule struct {
 	Comment  string `json:"comment,omitempty"`
 }
 
-// Store — правила DNAT + опция «заход с дома на белый IP» (VPN/обычный DNS).
+// Store — WAN DNAT + опциональный маршрут/masquerade к LAN за CPE
+// (когда dest вроде 192.168.1.137, а не хост на 10.10.10.0/24).
 type Store struct {
-	// LanHairpin: DNAT с LAN NanoPi, когда dest = белый IP (иначе только с WAN/ppp0).
-	LanHairpin bool   `json:"lan_hairpin"`
-	HomeNet    string `json:"home_net,omitempty"` // напр. 192.168.1.0/24 (сеть за роутером)
-	HomeVia    string `json:"home_via,omitempty"` // напр. 10.10.10.179 (WAN роутера на NanoPi LAN)
-	Rules      []Rule `json:"rules"`
+	HomeNet string `json:"home_net,omitempty"` // 192.168.1.0/24
+	HomeVia string `json:"home_via,omitempty"` // 10.10.10.179 — WAN роутера
+	Rules   []Rule `json:"rules"`
 }
 
 func StorePath() string {
@@ -123,8 +122,12 @@ func Save(s Store) error {
 	return os.Rename(tmpPath, path)
 }
 
+func hasHomeRoute(s Store) bool {
+	return strings.TrimSpace(s.HomeNet) != "" || strings.TrimSpace(s.HomeVia) != ""
+}
+
 func ValidateStore(s Store) error {
-	if s.LanHairpin {
+	if hasHomeRoute(s) {
 		if _, n, err := net.ParseCIDR(strings.TrimSpace(s.HomeNet)); err != nil || n == nil {
 			return fmt.Errorf("home_net: нужен CIDR, напр. 192.168.1.0/24")
 		}
@@ -148,7 +151,6 @@ func ValidateStore(s Store) error {
 		if _, ok := seen[key]; ok {
 			return fmt.Errorf("дубликат WAN-порта %d (%s)", r.WanPort, r.Proto)
 		}
-		// both конфликтует с tcp/udp на том же порту
 		if r.Proto == "both" {
 			if _, ok := seen[fmt.Sprintf("tcp/%d", r.WanPort)]; ok {
 				return fmt.Errorf("порт %d уже занят tcp", r.WanPort)
@@ -273,67 +275,8 @@ func LanInterface() string {
 	return lan
 }
 
-// WanIPv4s — текущие IPv4 на WAN/ppp0 (белый IP).
-func WanIPv4s() []string {
-	wan := "end0"
-	f, err := os.Open(EnvPath())
-	if err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			k, v, ok := strings.Cut(line, "=")
-			if !ok {
-				continue
-			}
-			if strings.TrimSpace(k) == "WAN_IF" {
-				v = strings.Trim(v, `"'`)
-				if v != "" {
-					wan = v
-				}
-			}
-		}
-		f.Close()
-	}
-	seen := map[string]struct{}{}
-	var out []string
-	for _, ifc := range []string{wan, "ppp0"} {
-		for _, ip := range addrsOn(ifc) {
-			if _, ok := seen[ip]; ok {
-				continue
-			}
-			seen[ip] = struct{}{}
-			out = append(out, ip)
-		}
-	}
-	return out
-}
-
-func addrsOn(ifc string) []string {
-	cmd := exec.Command("ip", "-4", "-o", "addr", "show", "dev", ifc)
-	b, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-	var ips []string
-	for _, line := range strings.Split(string(b), "\n") {
-		fields := strings.Fields(line)
-		for i, f := range fields {
-			if f == "inet" && i+1 < len(fields) {
-				ip, _, err := net.ParseCIDR(fields[i+1])
-				if err != nil {
-					ip = net.ParseIP(fields[i+1])
-				}
-				if ip != nil && ip.To4() != nil {
-					ips = append(ips, ip.String())
-				}
-			}
-		}
-	}
-	return ips
-}
-
 // RenderNft строит содержимое /etc/nftables.d/nanopi-port-forwards.nft.
-func RenderNft(s Store, wanIfaces []string, lanIF string, wanIPs []string) string {
+func RenderNft(s Store, wanIfaces []string, lanIF string) string {
 	var b strings.Builder
 	b.WriteString("# Managed by nanopi-webui — port forwards (do not edit)\n")
 	b.WriteString("table inet nanopi_portforward {\n")
@@ -343,7 +286,6 @@ func RenderNft(s Store, wanIfaces []string, lanIF string, wanIPs []string) strin
 		wanIfaces = []string{"end0", "ppp0"}
 	}
 	ifaceList := quoteIfaceSet(wanIfaces)
-	wanIPList := quoteIPSet(wanIPs)
 	for _, r := range s.Rules {
 		if !r.Enabled {
 			continue
@@ -361,17 +303,11 @@ func RenderNft(s Store, wanIfaces []string, lanIF string, wanIPs []string) strin
 				"\t\tiifname { %s } %s dport %d dnat ip to %s:%d%s\n",
 				ifaceList, p, r.WanPort, r.DestIP, r.DestPort, comment,
 			)
-			// Из дома (и при VPN): DNS → белый IP, пакет приходит на LAN NanoPi.
-			if s.LanHairpin && lanIF != "" && wanIPList != "" {
-				fmt.Fprintf(&b,
-					"\t\tiifname %s ip daddr { %s } %s dport %d dnat ip to %s:%d%s\n",
-					strconv.Quote(lanIF), wanIPList, p, r.WanPort, r.DestIP, r.DestPort, comment,
-				)
-			}
 		}
 	}
 	b.WriteString("\t}\n")
-	if s.LanHairpin && lanIF != "" && strings.TrimSpace(s.HomeNet) != "" {
+	// SNAT к LAN за CPE — чтобы ответы NPM шли обратно через NanoPi.
+	if hasHomeRoute(s) && lanIF != "" {
 		b.WriteString("\tchain postrouting {\n")
 		b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 		fmt.Fprintf(&b,
@@ -382,23 +318,6 @@ func RenderNft(s Store, wanIfaces []string, lanIF string, wanIPs []string) strin
 	}
 	b.WriteString("}\n")
 	return b.String()
-}
-
-func quoteIPSet(ips []string) string {
-	parts := make([]string, 0, len(ips))
-	seen := map[string]struct{}{}
-	for _, ip := range ips {
-		ip = strings.TrimSpace(ip)
-		if ip == "" {
-			continue
-		}
-		if _, ok := seen[ip]; ok {
-			continue
-		}
-		seen[ip] = struct{}{}
-		parts = append(parts, ip)
-	}
-	return strings.Join(parts, ", ")
 }
 
 func quoteIfaceSet(ifaces []string) string {
@@ -452,7 +371,7 @@ func WriteNftFile(s Store) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	content := RenderNft(s, WanInterfaces(), LanInterface(), WanIPv4s())
+	content := RenderNft(s, WanInterfaces(), LanInterface())
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".nft-*")
 	if err != nil {
 		return err
@@ -486,18 +405,22 @@ func ReloadNftables() error {
 		}
 		return fmt.Errorf("nft -f %s: %w\n%s", conf, err, msg)
 	}
-	// /etc/nftables.conf начинается с flush ruleset — сносит auto_redirect sing-box.
+	// flush ruleset сносит auto_redirect sing-box.
 	_ = exec.Command("systemctl", "try-reload-or-restart", "sing-box").Run()
 	return nil
 }
 
-// EnsureHomeRoute ставит маршрут в домашнюю LAN за роутером (нужен при dest=192.168.x.x).
-func EnsureHomeRoute(s Store) error {
+func removeHomeRouteUnit() {
 	unit := "/etc/systemd/system/nanopi-home-route.service"
-	if !s.LanHairpin {
-		_ = exec.Command("systemctl", "disable", "--now", "nanopi-home-route.service").Run()
-		_ = os.Remove(unit)
-		_ = exec.Command("systemctl", "daemon-reload").Run()
+	_ = exec.Command("systemctl", "disable", "--now", "nanopi-home-route.service").Run()
+	_ = os.Remove(unit)
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+}
+
+// EnsureHomeRoute — маршрут в LAN за роутером (dest=192.168.x.x).
+func EnsureHomeRoute(s Store) error {
+	if !hasHomeRoute(s) {
+		removeHomeRouteUnit()
 		return nil
 	}
 	lan := LanInterface()
@@ -507,6 +430,7 @@ func EnsureHomeRoute(s Store) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ip route replace: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
+	unit := "/etc/systemd/system/nanopi-home-route.service"
 	body := fmt.Sprintf(`[Unit]
 Description=NanoPi route to home LAN behind CPE
 After=network-online.target
@@ -530,7 +454,7 @@ WantedBy=multi-user.target
 	return nil
 }
 
-// Apply сохраняет store (если save), пишет nft-файл, маршрут, перезагружает ruleset.
+// Apply сохраняет store (если save), пишет nft, маршрут, перезагружает ruleset.
 func Apply(s Store, save bool) error {
 	if err := ValidateStore(s); err != nil {
 		return err
@@ -552,19 +476,14 @@ func Apply(s Store, save bool) error {
 	return ReloadNftables()
 }
 
-// SetLanHairpin обновляет опцию lan hairpin и применяет.
-func SetLanHairpin(enabled bool, homeNet, homeVia string) (Store, error) {
+// SetHomeRoute обновляет маршрут к LAN за CPE и применяет.
+func SetHomeRoute(homeNet, homeVia string) (Store, error) {
 	s, err := Load()
 	if err != nil {
 		return s, err
 	}
-	s.LanHairpin = enabled
 	s.HomeNet = strings.TrimSpace(homeNet)
 	s.HomeVia = strings.TrimSpace(homeVia)
-	if !enabled {
-		s.HomeNet = ""
-		s.HomeVia = ""
-	}
 	if err := Apply(s, true); err != nil {
 		return s, err
 	}

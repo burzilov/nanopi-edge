@@ -16,7 +16,6 @@ import (
 	"nanopi-webui/internal/clash"
 	"nanopi-webui/internal/config"
 	"nanopi-webui/internal/domains"
-	"nanopi-webui/internal/hairpin"
 	"nanopi-webui/internal/logfmt"
 	"nanopi-webui/internal/portfwd"
 	"nanopi-webui/internal/sbconfig"
@@ -60,8 +59,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /ports/add", s.handlePortsAdd)
 	mux.HandleFunc("POST /ports/delete", s.handlePortsDelete)
 	mux.HandleFunc("POST /ports/toggle", s.handlePortsToggle)
-	mux.HandleFunc("POST /ports/hairpin", s.handlePortsHairpin)
-	mux.HandleFunc("POST /ports/lan-hairpin", s.handlePortsLanHairpin)
+	mux.HandleFunc("POST /ports/home-route", s.handlePortsHomeRoute)
 	mux.HandleFunc("GET /api/ports", s.handleAPIPortsGet)
 	mux.HandleFunc("GET /config", s.handleConfigPage)
 	mux.HandleFunc("POST /config/check", s.handleConfigCheck)
@@ -316,15 +314,11 @@ func (s *Server) handleDomainsSaveRestart(w http.ResponseWriter, r *http.Request
 }
 
 type portsPageData struct {
-	Rules         []portfwd.Rule
-	LanHairpin    bool
-	HomeNet       string
-	HomeVia       string
-	HairpinTarget string
-	HairpinWanIPs []string
-	HairpinActive bool
-	Message       string
-	Error         string
+	Rules   []portfwd.Rule
+	HomeNet string
+	HomeVia string
+	Message string
+	Error   string
 }
 
 func (s *Server) portsData(msg, errMsg string) portsPageData {
@@ -332,7 +326,6 @@ func (s *Server) portsData(msg, errMsg string) portsPageData {
 		Message: msg,
 		Error:   errMsg,
 		Rules:   []portfwd.Rule{},
-		HomeNet: "192.168.1.0/24",
 	}
 	st, err := portfwd.Load()
 	if err != nil {
@@ -341,20 +334,8 @@ func (s *Server) portsData(msg, errMsg string) portsPageData {
 		}
 	} else {
 		d.Rules = st.Rules
-		d.LanHairpin = st.LanHairpin
-		if st.HomeNet != "" {
-			d.HomeNet = st.HomeNet
-		}
+		d.HomeNet = st.HomeNet
 		d.HomeVia = st.HomeVia
-	}
-	if hs, err := hairpin.GetStatus(); err != nil {
-		if d.Error == "" {
-			d.Error = err.Error()
-		}
-	} else {
-		d.HairpinTarget = hs.Target
-		d.HairpinWanIPs = hs.WanIPs
-		d.HairpinActive = hs.Active
 	}
 	return d
 }
@@ -363,37 +344,19 @@ func (s *Server) handlePortsPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "ports", s.portsData("", ""))
 }
 
-func (s *Server) handlePortsLanHairpin(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePortsHomeRoute(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	enabled := r.FormValue("enabled") == "1"
-	_, err := portfwd.SetLanHairpin(enabled, r.FormValue("home_net"), r.FormValue("home_via"))
+	_, err := portfwd.SetHomeRoute(r.FormValue("home_net"), r.FormValue("home_via"))
 	if err != nil {
 		s.render(w, "ports_inner", s.portsData("", err.Error()))
 		return
 	}
-	msg := "Доступ из дома по белому IP выключен"
-	if enabled {
-		msg = "Доступ из дома по белому IP включён (маршрут + nft). Dest в правилах = IP NPM (192.168.x.x)"
-	}
-	s.render(w, "ports_inner", s.portsData(msg, ""))
-}
-
-func (s *Server) handlePortsHairpin(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	target := strings.TrimSpace(r.FormValue("target"))
-	if err := hairpin.Apply(target); err != nil {
-		s.render(w, "ports_inner", s.portsData("", err.Error()))
-		return
-	}
-	msg := "DNS alias выключен"
-	if target != "" {
-		msg = "DNS alias → " + target
+	msg := "Маршрут к домашней LAN снят"
+	if strings.TrimSpace(r.FormValue("home_net")) != "" {
+		msg = "Маршрут к домашней LAN применён"
 	}
 	s.render(w, "ports_inner", s.portsData(msg, ""))
 }
