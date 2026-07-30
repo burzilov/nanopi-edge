@@ -447,20 +447,29 @@ YAML
 }
 
 nanopi_patch_singbox_exclude() {
-  # exclude_interface: WAN_IF + ppp0 + optional VLAN subif
+  # exclude_interface:
+  # - DHCP WAN: [WAN_IF]
+  # - PPPoE WAN: [WAN_IF, ppp0, optional WAN_IF.VLAN]
   local cfg="${SINGBOX_CONFIG:-/etc/sing-box/config.json}"
   local wan="$WAN_IF"
   local vlan="${PPPOE_VLAN:-}"
+  local mode="${WAN_MODE:-dhcp}"
   [[ -f "$cfg" ]] || return 0
   local tmp
   tmp=$(mktemp)
-  if [[ -n "$vlan" ]]; then
-    jq --arg wan "$wan" --arg vif "${wan}.${vlan}" '
-      (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0", $vif]
-    ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
+  if [[ "$mode" == "pppoe" ]]; then
+    if [[ -n "$vlan" ]]; then
+      jq --arg wan "$wan" --arg vif "${wan}.${vlan}" '
+        (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0", $vif]
+      ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
+    else
+      jq --arg wan "$wan" '
+        (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0"]
+      ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
+    fi
   else
     jq --arg wan "$wan" '
-      (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0"]
+      (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan]
     ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
   fi
   chmod 600 "$cfg"
@@ -1152,7 +1161,8 @@ selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (анти�
           stack: "mixed",
           route_exclude_address: ["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"],
           auto_redirect: true,
-          exclude_interface: [$wan, "ppp0"]
+          # ppp0 добавляется только при WAN_MODE=pppoe (nanopi_patch_singbox_exclude)
+          exclude_interface: [$wan]
         }
       ],
       outbounds: (
