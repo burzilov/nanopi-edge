@@ -20,26 +20,21 @@
 {{end}}
 
 {{define "mobile_vless_inner"}}
-<section>
+<section class="mv-page">
   <h1>Мобильный VLESS</h1>
-  <p class="hint">Входящий <strong>VLESS + Reality</strong> на NanoPi для одного телефона
-    (Hiddify). Трафик проходит через те же правила sing-box, что и домашний TUN:
-    заблокированные/Telegram/AI — через активный proxy, <code>.ru</code> — напрямую.</p>
-  <p class="hint warn-hint">Панель без пароля: любой, кто открыл
-    <code>http://10.10.10.1/</code>, может выдать или отозвать этот профиль.
+  <p class="hint">Входящий <strong>VLESS + Reality</strong> для одного телефона (Hiddify).
+    Трафик идёт по тем же правилам sing-box, что и домашний TUN.</p>
+  <p class="hint warn-hint">Панель без пароля: любой с доступом к
+    <code>http://10.10.10.1/</code> может выдать или отозвать профиль.
     Не выставляйте WebUI в интернет.</p>
-  <p class="hint">Порты <code>80</code>/<code>443</code> остаются у Nginx Proxy Manager.
-    Для телефона используется отдельный TCP-порт (по умолчанию <code>8443</code>).
-    Адрес в профиле — публичный WAN IPv4 NanoPi; «маскировочный сайт» ниже —
-    только для Reality handshake/SNI, не endpoint Hiddify.</p>
 
-  <div class="card ports-card">
-    <dl class="pm-meta">
+  <div class="card ports-card mv-status-card">
+    <dl class="pm-meta mv-meta">
       <div>
         <dt>Состояние</dt>
         <dd>
           {{if .Enabled}}<span class="pill ok">включён</span>{{else}}<span class="pill">выкл</span>{{end}}
-          {{if .ProfileActive}} · профиль активен{{else}} · профиля нет{{end}}
+          {{if .HasProfile}} · профиль есть{{else}} · профиля нет{{end}}
           {{if .InboundPresent}} · inbound в config{{else}}{{if .Enabled}} · <span class="pill">нет в config</span>{{end}}{{end}}
         </dd>
       </div>
@@ -53,40 +48,87 @@
       </div>
       <div>
         <dt>WAN IPv4</dt>
-        <dd>{{if .WanIP}}<code>{{.WanIP}}</code>{{else}}—{{end}}
-          {{if .WanIPs}}{{range $i, $ip := .WanIPs}}{{if $i}}, {{end}}{{if ne $ip $.WanIP}}<code>{{$ip}}</code>{{end}}{{end}}{{end}}
-        </dd>
+        <dd>{{if .WanIP}}<code>{{.WanIP}}</code>{{else}}—{{end}}</dd>
       </div>
       <div>
         <dt>Маскировка</dt>
-        <dd>{{if .HandshakeServer}}<code>{{.HandshakeServer}}:{{.HandshakePort}}</code> · SNI <code>{{.ServerName}}</code>{{else}}—{{end}}</dd>
+        <dd>{{if .SiteReady}}<code>{{.HandshakeServer}}:{{.HandshakePort}}</code><br>SNI <code>{{.ServerName}}</code>{{else}}— ещё не задана{{end}}</dd>
       </div>
-      {{if .CreatedAt}}
       <div>
-        <dt>Профиль создан</dt>
-        <dd><code>{{.CreatedAt}}</code>{{if .Label}} · {{.Label}}{{end}}</dd>
+        <dt>Профиль</dt>
+        <dd>{{if .HasProfile}}{{if .Label}}<code>{{.Label}}</code>{{else}}без метки{{end}}{{if .CreatedAt}} · {{.CreatedAt}}{{end}}{{else}}—{{end}}</dd>
       </div>
-      {{end}}
+      <div>
+        <dt>Шаг</dt>
+        <dd>
+          {{if not .HasProfile}}1 — создать профиль
+          {{else if not .Enabled}}2 — сайт и включение
+          {{else}}3 — URI / QR для Hiddify{{end}}
+        </dd>
+      </div>
     </dl>
     {{if .Hint}}<p class="hint ports-hairpin-meta">{{.Hint}}</p>{{end}}
     {{if .CheckMsg}}
       <p class="hint {{if .CheckOK}}ok-hint{{else}}warn-hint{{end}}">Проверка сайта: {{.CheckMsg}}</p>
     {{end}}
+  </div>
 
+  {{if not .HasProfile}}
+  <div class="card ports-card mv-step">
+    <h2>Шаг 1. Создать профиль</h2>
+    <p class="hint">Генерируются ключи Reality и UUID. Маскировочный сайт настроите на следующем шаге —
+      до этого inbound не слушает порт.</p>
+    <form class="ports-form"
+          hx-post="/mobile-vless/profile/create"
+          hx-target="#mobile-vless-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">Метка профиля
+          <input name="label" type="text" value="{{if .Label}}{{.Label}}{{else}}mobile{{end}}"
+                 placeholder="mobile" autocomplete="off" required>
+        </label>
+        <label>Порт TCP
+          <input name="port" type="number" min="1" max="65535"
+                 value="{{if .Port}}{{.Port}}{{else}}8443{{end}}" required>
+        </label>
+      </div>
+      <p class="hint mv-field-hint">Порты <code>80</code> и <code>443</code> заняты Nginx Proxy Manager —
+        обычно оставляют <code>8443</code>.</p>
+      <div class="mv-actions">
+        <button type="submit">Создать профиль</button>
+      </div>
+    </form>
+  </div>
+  {{else}}
+
+  <div class="card ports-card mv-step">
+    <h2>Шаг 2. Маскировочный TLS-сайт</h2>
+    <p class="hint">Это не адрес Hiddify, а сайт для Reality handshake / SNI.
+      Endpoint телефона — WAN IP NanoPi и порт из шага 1.</p>
+    <p class="hint">Профиль: <code>{{if .Label}}{{.Label}}{{else}}mobile{{end}}</code>
+      · порт <code>{{.Port}}</code></p>
     <form class="ports-form" id="mv-settings"
           hx-post="/mobile-vless/settings"
           hx-target="#mobile-vless-main"
           hx-swap="innerHTML">
       <div class="row">
-        <label>Порт TCP
-          <input name="port" type="number" min="1" max="65535" value="{{.Port}}" required>
+        <label class="grow">Пресет
+          <select id="mv-preset" onchange="nanopiApplyVlessPreset(this)">
+            <option value="">— выбрать и подставить —</option>
+            {{range .Presets}}
+            <option value="{{.Server}}|{{.Port}}|{{.SNI}}">{{.Name}}</option>
+            {{end}}
+          </select>
         </label>
+      </div>
+      <div class="row">
         <label class="grow">Маскировочный TLS-сайт
           <input name="handshake_server" type="text" value="{{.HandshakeServer}}"
                  placeholder="www.cloudflare.com" required autocomplete="off">
         </label>
         <label>Порт сайта
-          <input name="handshake_port" type="number" min="1" max="65535" value="{{.HandshakePort}}" required>
+          <input name="handshake_port" type="number" min="1" max="65535"
+                 value="{{if .HandshakePort}}{{.HandshakePort}}{{else}}443{{end}}" required>
         </label>
       </div>
       <div class="row">
@@ -94,64 +136,55 @@
           <input name="server_name" type="text" value="{{.ServerName}}"
                  placeholder="www.cloudflare.com" required autocomplete="off">
         </label>
-        <label>Метка профиля
-          <input name="label" type="text" value="{{.Label}}" placeholder="mobile" autocomplete="off">
+        <label>Порт inbound
+          <input name="port" type="number" min="1" max="65535" value="{{.Port}}" required>
         </label>
       </div>
-      <div class="row">
-        <label class="grow">Пресет (подставит поля; всё равно проверьте)
-          <select id="mv-preset" onchange="nanopiApplyVlessPreset(this)">
-            <option value="">— выбрать —</option>
-            {{range .Presets}}
-            <option value="{{.Server}}|{{.Port}}|{{.SNI}}">{{.Name}}</option>
-            {{end}}
-          </select>
-        </label>
-      </div>
-      <div class="ports-add-actions">
-        <button type="submit" formaction="/mobile-vless/check" formmethod="post"
-                hx-post="/mobile-vless/check" hx-target="#mobile-vless-main" hx-swap="innerHTML"
-                class="secondary">Проверить сайт</button>
-        <button type="submit">Сохранить и включить</button>
+      <div class="mv-actions">
+        <button type="submit" class="secondary"
+                hx-post="/mobile-vless/check"
+                hx-target="#mobile-vless-main"
+                hx-swap="innerHTML">Проверить сайт</button>
+        <button type="submit">{{if .Enabled}}Сохранить изменения{{else}}Сохранить и включить{{end}}</button>
       </div>
     </form>
+  </div>
 
-    <div class="ports-add-actions" style="margin-top:1rem">
-      {{if not .ProfileActive}}
-      <form hx-post="/mobile-vless/profile/create" hx-target="#mobile-vless-main" hx-swap="innerHTML"
-            hx-include="#mv-settings">
-        <button type="submit">Создать профиль</button>
+  <div class="card ports-card mv-step">
+    <h2>Профиль и QR</h2>
+    <div class="mv-actions mv-actions-row">
+      {{if .Enabled}}
+      <form hx-post="/mobile-vless/profile/show" hx-target="#mv-profile" hx-swap="innerHTML">
+        <button type="submit" class="secondary">Показать URI и QR</button>
       </form>
       {{else}}
-      <form hx-post="/mobile-vless/profile/show" hx-target="#mv-profile" hx-swap="innerHTML">
-        <button type="submit" class="secondary">Показать профиль (URI + QR)</button>
-      </form>
+      <p class="hint">Сначала включите inbound на шаге 2 — затем здесь появится кнопка URI/QR.</p>
+      {{end}}
       <form hx-post="/mobile-vless/profile/rotate" hx-target="#mobile-vless-main" hx-swap="innerHTML"
             hx-confirm="Старый QR перестанет работать. Продолжить?">
-        <button type="submit" class="secondary">Перевыпустить профиль</button>
+        <button type="submit" class="secondary">Перевыпустить UUID</button>
       </form>
       <form hx-post="/mobile-vless/profile/revoke" hx-target="#mobile-vless-main" hx-swap="innerHTML"
-            hx-confirm="Отозвать профиль и выключить inbound на 8443?">
+            hx-confirm="Отозвать профиль и выключить inbound?">
         <button type="submit" class="danger">Отозвать и выключить</button>
       </form>
-      {{end}}
     </div>
-
-    <div id="mv-profile" class="mv-profile" style="margin-top:1rem">
+    <div id="mv-profile" class="mv-profile">
       {{if .ProfileURI}}
         {{template "mobile_vless_profile" .}}
-      {{else}}
-        <p class="hint">URI и QR не хранятся на странице — нажмите «Показать профиль».</p>
+      {{else if .Enabled}}
+        <p class="hint">URI и QR не хранятся на странице — нажмите «Показать URI и QR».</p>
       {{end}}
     </div>
   </div>
+  {{end}}
 
-  <div class="card" style="margin-top:1rem">
-    <h2>Проверка</h2>
-    <ol class="hint">
+  <div class="card mv-step">
+    <h2>Проверка с телефона</h2>
+    <ol class="hint mv-checklist">
       <li>С Wi‑Fi (Hiddify выкл.) убедитесь, что сайты NPM на 80/443 работают как раньше.</li>
-      <li>Импортируйте QR в Hiddify, включите в домашнем Wi‑Fi — подключение к WAN IP:порту.</li>
-      <li>Выключите Wi‑Fi, повторите из мобильной сети (это же проверка внешнего доступа к порту).</li>
+      <li>Импортируйте QR в Hiddify, включите в домашнем Wi‑Fi.</li>
+      <li>Выключите Wi‑Fi и повторите из мобильной сети (проверка внешнего доступа к порту).</li>
       <li>Проверьте ресурс из proxy-правил (например ipify) и любой <code>.ru</code> для direct.</li>
     </ol>
   </div>
@@ -164,15 +197,14 @@
 <p class="hint warn-hint">{{.Error}}</p>
 {{else}}
 <div class="mv-profile-box">
-  <p class="hint warn-hint">Секретный URI. Не отправляйте в чаты и не оставляйте вкладку открытой
-    на чужом устройстве. После перезагрузки страницы блок скроется.</p>
+  <p class="hint warn-hint">Секретный URI. Не отправляйте в чаты. После перезагрузки страницы блок скроется.</p>
   {{if .ProfileQR}}
   <p><img class="mv-qr" src="{{.ProfileQR}}" width="220" height="220" alt="QR VLESS"></p>
   {{end}}
   <label>VLESS URI
     <textarea id="mv-uri" readonly rows="4">{{.ProfileURI}}</textarea>
   </label>
-  <div class="ports-add-actions">
+  <div class="mv-actions">
     <button type="button" class="secondary" onclick="nanopiCopyVlessURI()">Копировать URI</button>
   </div>
 </div>
