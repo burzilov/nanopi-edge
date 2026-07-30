@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"nanopi-webui/internal/config"
 )
 
 const (
@@ -244,12 +246,19 @@ func Check(repo, webuiCurrent, edgeCurrent string) (CheckResult, error) {
 		out.Edge.Error = fmt.Sprintf("нет ассета %s", EdgeScriptAsset)
 	} else if edgeCurrent == "" || edgeCurrent == "unknown" {
 		out.Edge.UpdateAvailable = false
-		out.Edge.Error = "EDGE_VERSION не задан в .env (появится после обновления с новым релизом)"
+		out.Edge.Error = "EDGE_VERSION не задан в .env"
 	} else {
 		out.Edge.UpdateAvailable = CompareSemver(edgeCurrent, rel.TagName) < 0
+		// Метка Edge часто отстаёт, если WebUI ставили отдельно. Не из‑за этого
+		// предлагать «Обновить», если панель уже на latest — иначе ложный апдейт.
+		if out.Edge.UpdateAvailable && !out.WebUI.UpdateAvailable {
+			out.Edge.Error = "метка EDGE_VERSION в .env устарела; WebUI уже на latest — полный апдейт не нужен"
+			out.Edge.UpdateAvailable = false
+		}
 	}
 
-	out.UpdateAvailable = out.WebUI.UpdateAvailable || out.Edge.UpdateAvailable
+	// Кнопка «Обновить» — только если отстаёт WebUI (релиз монорепо тянет и edge).
+	out.UpdateAvailable = out.WebUI.UpdateAvailable
 	return out, nil
 }
 
@@ -382,6 +391,8 @@ func ApplyAll(repo, version, edgeScript, webuiScript string) error {
 		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "webui", Error: err.Error()})
 		return fmt.Errorf("webui: %w", err)
 	}
+	// На случай если install-singbox не дописал метку — фиксируем оба компонента на tag релиза.
+	_ = config.SetKV(config.DefaultEnvPath(), "EDGE_VERSION", version)
 	_ = WriteStatus(ApplyStatus{State: "ok", Version: version, Step: "done"})
 	return nil
 }
