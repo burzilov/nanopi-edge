@@ -119,6 +119,48 @@ func ReadStatus() (ApplyStatus, error) {
 	return st, nil
 }
 
+const applyUnit = "nanopi-edge-update.service"
+
+func systemdUnitActive(unit string) bool {
+	return exec.Command("systemctl", "is-active", "--quiet", unit).Run() == nil
+}
+
+func applyProcessRunning() bool {
+	out, err := exec.Command("pgrep", "-f", "nanopi-webui --apply-update").Output()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
+}
+
+// InProgress — реально идёт apply (unit или процесс), а не залипший status=running.
+func InProgress() (ApplyStatus, bool) {
+	st, err := ReadStatus()
+	if err != nil || st.State != "running" {
+		return st, false
+	}
+	if systemdUnitActive(applyUnit) || applyProcessRunning() {
+		return st, true
+	}
+	// systemd-run только что стартовал — короткая пауза до появления unit/процесса
+	if st.UpdatedAt > 0 && time.Since(time.Unix(st.UpdatedAt, 0)) < 90*time.Second {
+		return st, true
+	}
+	return st, false
+}
+
+// ClearStaleRunning сбрасывает status=running, если воркера уже нет
+// (типично после убитого in-process apply или обрыва до WriteStatus ok).
+func ClearStaleRunning() {
+	st, busy := InProgress()
+	if st.State != "running" || busy {
+		return
+	}
+	_ = WriteStatus(ApplyStatus{
+		State:   "error",
+		Version: st.Version,
+		Step:    st.Step,
+		Error:   "прервано (процесс обновления не найден; статус сброшен)",
+	})
+}
+
 func Normalize(v string) string {
 	v = strings.TrimSpace(v)
 	return strings.TrimPrefix(v, "v")
