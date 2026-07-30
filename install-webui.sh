@@ -207,6 +207,9 @@ EOF
   fi
 
   info "Готово. Скрипт на плате: ${SCRIPT_DST}"
+  # явная уборка до выхода — чтобы EXIT-trap не споткнулся о set -u
+  cleanup_tmp
+  trap - EXIT
 }
 
 main "$@"

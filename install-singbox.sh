@@ -1203,6 +1203,29 @@ Lab-кабель сейчас в WAN-разъёме." \
 }
 
 prompt_hairpin_dns() {
+  # Фоновый апдейт из WebUI: не спрашиваем, только освежаем alias если ключ уже есть.
+  if [[ "${NANOPI_YES:-}" == "1" ]]; then
+    local existing=""
+    if [[ -f "$OPT_ENV" ]] && grep -q '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" 2>/dev/null; then
+      existing=$(grep -E '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" | tail -1 | cut -d= -f2- | tr -d '\r')
+    fi
+    HAIRPIN_DNS_TARGET=$existing
+    if [[ -n "$existing" && -x "$SCRIPTS_DIR/hairpin-dns-refresh" ]]; then
+      # shellcheck disable=SC1091
+      source "$SCRIPTS_DIR/common.sh"
+      nanopi_load_env 2>/dev/null || true
+      HAIRPIN_DNS_TARGET=$existing
+      nanopi_write_hairpin_dns_alias
+      if systemctl is-active --quiet dnsmasq 2>/dev/null; then
+        systemctl restart dnsmasq || true
+      fi
+      info "Hairpin DNS (NANOPI_YES): ${existing}"
+    else
+      info "Hairpin DNS (NANOPI_YES): пропуск"
+    fi
+    return 0
+  fi
+
   explain \
     "Опционально: hairpin DNS для доменов NPM из домашней LAN.
 Укажи LAN IP NPM (или хоста за роутером). dnsmasq подменит A-записи
