@@ -294,7 +294,7 @@ func Check(repo, webuiCurrent, edgeCurrent string) (CheckResult, error) {
 		// Метка Edge часто отстаёт, если WebUI ставили отдельно. Не из‑за этого
 		// предлагать «Обновить», если панель уже на latest — иначе ложный апдейт.
 		if out.Edge.UpdateAvailable && !out.WebUI.UpdateAvailable {
-			out.Edge.Error = "метка EDGE_VERSION в .env устарела; WebUI уже на latest — полный апдейт не нужен"
+			out.Edge.Error = "метка EDGE_VERSION в .env устарела (WebUI уже на latest). Это только ярлык версии скриптов edge — на работу не влияет. Исправьте: EDGE_VERSION=" + rel.TagName + " в /opt/nanopi-edge/.env"
 			out.Edge.UpdateAvailable = false
 		}
 	}
@@ -406,6 +406,7 @@ func ApplyWebUI(destScript, repo, version string) error {
 	return runBashArgs(destScript, []string{"--noninteractive"},
 		"WEBUI_GITHUB_REPO="+repo,
 		"WEBUI_VERSION="+version,
+		"UPDATE_STATUS_PATH="+StatusPath(),
 		"DEBIAN_FRONTEND=noninteractive",
 	)
 }
@@ -428,7 +429,7 @@ func ApplyAll(repo, version, edgeScript, webuiScript string) error {
 		_ = WriteStatus(ApplyStatus{State: "error", Version: version, Step: "edge", Error: err.Error()})
 		return fmt.Errorf("edge: %w", err)
 	}
-	// Метку пишем до рестарта webui — если worker убьют на restart, EDGE_VERSION уже верная.
+	// После успешного edge (и до restart webui): метка переживает убийство воркера.
 	_ = config.SetKV(config.DefaultEnvPath(), "EDGE_VERSION", version)
 	_ = WriteStatus(ApplyStatus{State: "running", Version: version, Step: "webui"})
 	if err := ApplyWebUI(webuiScript, repo, version); err != nil {

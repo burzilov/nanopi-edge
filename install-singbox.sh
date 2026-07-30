@@ -95,10 +95,15 @@ need_root() { [[ $(id -u) -eq 0 ]] || die "нужен root (sudo -i / sudo bash 
 
 load_env() {
   [[ -f "$OPT_ENV" ]] || return 0
+  # Не затирать EDGE_VERSION из окружения (WebUI Apply передаёт тег релиза).
+  local keep_edge_version="${EDGE_VERSION:-}"
   # shellcheck disable=SC1090
   source "$OPT_ENV"
   WAN_IF=${WAN_IF:-end0}
   LAN_IF=${LAN_IF:-enp1s0}
+  if [[ -n "$keep_edge_version" ]]; then
+    EDGE_VERSION="$keep_edge_version"
+  fi
 }
 
 is_installed() {
@@ -1149,6 +1154,8 @@ gen_clash_secrets() {
 
   local secret=""
   local saved_wan="$WAN_IF" saved_lan="$LAN_IF"
+  # source .env не должен откатить EDGE_VERSION, переданный из WebUI.
+  local keep_edge_version="${EDGE_VERSION:-}"
   if [[ -f $OPT_ENV ]] && grep -q '^CLASH_SECRET=' "$OPT_ENV"; then
     # shellcheck disable=SC1090
     source "$OPT_ENV"
@@ -1168,6 +1175,9 @@ gen_clash_secrets() {
   # source мог вернуть старые IF — оставляем значения с шага prompt_interfaces
   WAN_IF="$saved_wan"
   LAN_IF="$saved_lan"
+  if [[ -n "${keep_edge_version}" ]]; then
+    EDGE_VERSION="$keep_edge_version"
+  fi
   if [[ -z "${secret:-}" ]]; then
     secret=$(openssl rand -hex 16)
   fi
