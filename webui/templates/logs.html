@@ -16,6 +16,10 @@
         <h1>Логи sing-box</h1>
         <button type="button" id="log-clear" class="secondary">Очистить</button>
       </div>
+      <p class="hint">Журнал работы прокси в реальном времени: подключения, ошибки,
+        смена маршрутов. Полезно, если сайты не открываются или VPN «отвалился».
+        «Очистить» только скрывает уже показанные строки на экране — файлы на диске
+        не трогает.</p>
       {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
       <div id="log-view" class="logs">{{.LogsHTML}}</div>
       <script src="/static/logs.js"></script>

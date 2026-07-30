@@ -1,4 +1,4 @@
-package npmcfg
+package proxymgr
 
 import "testing"
 

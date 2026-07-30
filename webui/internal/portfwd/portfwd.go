@@ -306,7 +306,7 @@ func RenderNft(s Store, wanIfaces []string, lanIF string) string {
 		}
 	}
 	b.WriteString("\t}\n")
-	// SNAT к LAN за CPE — чтобы ответы NPM шли обратно через NanoPi.
+	// SNAT к LAN за CPE — чтобы ответы Nginx Proxy Manager шли обратно через NanoPi.
 	if hasHomeRoute(s) && lanIF != "" {
 		b.WriteString("\tchain postrouting {\n")
 		b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")

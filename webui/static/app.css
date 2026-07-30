@@ -59,6 +59,7 @@ nav a { color: var(--accent); text-decoration: none; font-weight: 600; }
 .toast-body {
   font-size: 0.92rem;
   line-height: 1.35;
+  white-space: pre-line;
 }
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(-8px) scale(0.98); }
@@ -69,6 +70,9 @@ nav a { color: var(--accent); text-decoration: none; font-weight: 600; }
 main { max-width: 960px; margin: 0 auto; padding: 1.25rem; }
 h1 { margin-top: 0; font-size: 1.4rem; }
 .hint, .label { color: var(--muted); font-size: 0.92rem; }
+.hint { line-height: 1.45; max-width: 46rem; margin: 0.35rem 0 0.75rem; }
+.hint + .hint { margin-top: -0.35rem; }
+.updates-intro { margin-bottom: 0.85rem; }
 .card {
   background: var(--card);
   border: 1px solid var(--border);
@@ -289,19 +293,19 @@ code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 4px; }
 .ports-toggle { min-width: 2.4rem; padding: 0.3rem 0.45rem; }
 form.inline { display: inline; margin: 0; }
 
-.npm-meta {
+.pm-meta {
   display: grid;
   gap: 0.65rem 1.25rem;
   margin: 1rem 0 0;
   padding: 0;
   grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
 }
-.npm-meta div { margin: 0; }
-.npm-meta dt {
+.pm-meta div { margin: 0; }
+.pm-meta dt {
   margin: 0;
   font-size: 0.8rem;
   color: var(--muted);
   font-weight: 600;
 }
-.npm-meta dd { margin: 0.25rem 0 0; }
+.pm-meta dd { margin: 0.25rem 0 0; }
 

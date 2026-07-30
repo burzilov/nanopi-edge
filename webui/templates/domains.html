@@ -20,12 +20,16 @@
 {{define "domains_inner"}}
 <section>
   <h1>Домены → прокси</h1>
-  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
-  {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
-  <form hx-post="/domains/save-restart" hx-target="#domains-main" hx-swap="innerHTML"
-        hx-confirm="Применить домены и перезапустить sing-box?">
-    <textarea name="domains" rows="20" class="wide">{{.Text}}</textarea>
+  <p class="hint">Список сайтов и доменов, трафик к которым идёт через VPN (VLESS),
+    а не напрямую в интернет. Один домен или суффикс на строку, например
+    <code>youtube.com</code> или <code>.google.com</code> (точка в начале —
+    все поддомены). Остальной трафик идёт без прокси.</p>
+  <p class="hint">После сохранения sing-box перезапустится — интернет на несколько
+    секунд может моргнуть.</p>
+  <form hx-post="/domains/save-restart" hx-target="#domains-main" hx-swap="innerHTML">
+    <textarea name="domains" rows="20" class="wide" placeholder="youtube.com&#10;.google.com">{{.Text}}</textarea>
     <button type="submit">Сохранить и перезапустить</button>
   </form>
 </section>
+{{template "oob/toast" .}}
 {{end}}

@@ -37,15 +37,15 @@
   function stepLabel(step) {
     switch (step) {
       case "starting":
-        return "Запуск…";
+        return "Готовлю установку…";
       case "edge":
-        return "Обновляю edge (sing-box / scripts)…";
+        return "Обновляю систему на NanoPi (edge)…";
       case "webui":
-        return "Обновляю WebUI…";
+        return "Обновляю эту панель…";
       case "done":
-        return "Готово";
+        return "Готово — обновляю страницу…";
       default:
-        return step ? String(step) : "Обновление…";
+        return step ? String(step) : "Идёт обновление…";
     }
   }
 
@@ -56,19 +56,19 @@
     notesEl.textContent = "";
     detailEl.hidden = true;
     detailEl.textContent = "";
-    setStatus("Проверяю GitHub Releases…", false);
+    setStatus("Смотрю свежие релизы на GitHub…", false);
     dialog.showModal();
     try {
       const r = await fetch("/api/updates/check", { headers: { Accept: "application/json" } });
       const j = await r.json();
       if (!r.ok) {
-        setStatus(j.error || "Ошибка проверки", true);
+        setStatus(j.error || "Не удалось проверить обновления", true);
         return;
       }
       const webuiCur = (j.webui && j.webui.current) || "?";
       const edgeCur = (j.edge && j.edge.current) || "?";
       detailEl.textContent =
-        "Сейчас: WebUI " + webuiCur + ", Edge " + edgeCur;
+        "Сейчас установлено: панель " + webuiCur + ", edge " + edgeCur;
       detailEl.hidden = false;
       if (j.edge && j.edge.error) {
         detailEl.textContent += "\n" + j.edge.error;
@@ -76,14 +76,19 @@
 
       if (j.update_available) {
         pendingTag = j.latest;
-        setStatus("Доступна " + j.latest + ". Можно обновить edge и панель.", false);
+        setStatus(
+          "Доступна версия " +
+            j.latest +
+            ". Можно обновить систему на NanoPi и эту панель.",
+          false
+        );
         if (j.body) {
           notesEl.textContent = j.body;
           notesEl.hidden = false;
         }
         applyBtn.hidden = false;
       } else {
-        setStatus("Актуально: " + (j.latest || webuiCur), false);
+        setStatus("Уже актуальная версия: " + (j.latest || webuiCur), false);
       }
     } catch (e) {
       setStatus(String(e), true);
@@ -159,15 +164,6 @@
 
   async function applyUpdate() {
     if (!pendingTag) return;
-    if (
-      !confirm(
-        "Обновить до " +
-          pendingTag +
-          "?\n\nСначала edge, затем WebUI.\nСтраница обновится, когда панель ответит новой версией."
-      )
-    ) {
-      return;
-    }
     dialog.close();
     waiting = true;
     overlay.hidden = false;
@@ -189,7 +185,7 @@
       });
       if (!r.ok && r.status !== 202) {
         hideOverlay();
-        alert(j.error || "Не удалось запустить обновление");
+        showToast(j.error || "Не удалось запустить обновление", true);
         return;
       }
     } catch (_) {
@@ -206,12 +202,33 @@
       return;
     }
     const st = result.status || {};
-    alert(
+    showToast(
       (result.message || "Обновление не завершилось") +
         (st.error ? "\n" + st.error : "") +
         (st.step ? "\nШаг: " + st.step : "") +
-        "\nЛог: /opt/nanopi-edge/update.log\nМожно просто обновить страницу (F5)."
+        "\nЛог: /opt/nanopi-edge/update.log\nМожно обновить страницу (F5).",
+      true
     );
+  }
+
+  function showToast(text, isErr) {
+    const host = document.getElementById("toast-host");
+    if (!host) return;
+    host.innerHTML =
+      '<div class="toast ' +
+      (isErr ? "toast-err" : "toast-ok") +
+      '" role="' +
+      (isErr ? "alert" : "status") +
+      '">' +
+      '<div class="toast-title">' +
+      (isErr ? "Ошибка" : "Уведомление") +
+      "</div>" +
+      '<div class="toast-body"></div></div>';
+    host.querySelector(".toast-body").textContent = text;
+    clearTimeout(window.__toastHide);
+    window.__toastHide = setTimeout(function () {
+      host.innerHTML = "";
+    }, 8000);
   }
 
   if (overlayDismiss) {

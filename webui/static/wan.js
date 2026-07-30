@@ -14,16 +14,6 @@
     if (btn) btn.textContent = show ? "скрыть" : "показать";
   }
 
-  function confirmWan(form) {
-    var mode = (form.querySelector('[name="mode"]') || {}).value;
-    if (mode === "pppoe") {
-      return window.confirm(
-        "Включить WAN PPPoE к ISP?\nИнтернет может кратко пропасть, пока сессия не поднимется."
-      );
-    }
-    return true;
-  }
-
   function wanBusy() {
     var root = document.getElementById("wan");
     if (!root) return false;
@@ -35,7 +25,6 @@
 
   window.nanopiToggleWanFields = toggleWanFields;
   window.nanopiTogglePass = togglePass;
-  window.nanopiConfirmWan = confirmWan;
 
   document.body.addEventListener("htmx:beforeRequest", function (ev) {
     var elt = ev.detail && ev.detail.elt;
