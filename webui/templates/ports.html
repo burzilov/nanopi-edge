@@ -1,3 +1,22 @@
+{{define "ports"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проброс портов — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="ports-main">
+    {{template "ports_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
 {{define "ports_inner"}}
 <section>
   <h1>Проброс портов</h1>

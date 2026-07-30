@@ -83,70 +83,70 @@
     }
   }
 
+  async function fetchVersion() {
+    const r = await fetch("/api/version", { cache: "no-store" });
+    if (!r.ok) return null;
+    return r.json();
+  }
+
   async function waitUntilApplyDone(expected, tries) {
     let lastStatus = null;
+    let webuiOkStreak = 0;
     for (let i = 0; i < tries; i++) {
       await sleep(2000);
+      let st = null;
       try {
         const r = await fetch("/api/updates/status", { cache: "no-store" });
-        if (!r.ok) continue;
-        const st = await r.json();
-        lastStatus = st;
-        if (overlayStep) {
-          overlayStep.textContent = stepLabel(st.step) +
-            (st.version ? " → " + st.version : "");
-        }
-        if (st.state === "error") {
-          return { ok: false, status: st };
-        }
-        if (st.state === "ok" && normVer(st.version) === normVer(expected)) {
-          // дождаться, пока новая панель отдаст обе версии
-          const ver = await waitForBothVersions(expected, 30);
-          if (ver.matched) {
-            return { ok: true, status: st, version: ver };
+        if (r.ok) {
+          st = await r.json();
+          lastStatus = st;
+          if (overlayStep) {
+            overlayStep.textContent =
+              stepLabel(st.step) + (st.version ? " → " + st.version : "");
           }
-          return {
-            ok: false,
-            status: st,
-            version: ver,
-            message:
-              "Apply завершён, но /api/version ещё не совпал (webui/edge).",
-          };
+          if (st.state === "error") {
+            return { ok: false, status: st };
+          }
         }
       } catch (_) {
         if (overlayStep) {
           overlayStep.textContent = "Панель перезапускается…";
         }
       }
-    }
-    return { ok: false, status: lastStatus, message: "Таймаут ожидания apply" };
-  }
 
-  async function waitForBothVersions(expected, tries) {
-    let last = null;
-    for (let i = 0; i < tries; i++) {
-      await sleep(2000);
+      // Главный критерий готовности: новая панель уже отвечает нужной версией.
+      // (status=ok может не успеть записаться, если worker убили на restart.)
       try {
-        const r = await fetch("/api/version", { cache: "no-store" });
-        if (!r.ok) continue;
-        const j = await r.json();
-        last = j;
-        const webuiOk = normVer(j.version) === normVer(expected);
-        const edgeOk =
-          !!j.edge_version &&
-          normVer(j.edge_version) === normVer(expected);
-        if (webuiOk && edgeOk) {
-          return { matched: true, version: j.version, edge: j.edge_version };
+        const j = await fetchVersion();
+        if (j && normVer(j.version) === normVer(expected)) {
+          webuiOkStreak++;
+          if (overlayStep) {
+            overlayStep.textContent =
+              "WebUI " + j.version + " готов" +
+              (j.edge_version ? ", Edge " + j.edge_version : "");
+          }
+          if (webuiOkStreak >= 2) {
+            return {
+              ok: true,
+              status: st || lastStatus,
+              version: { version: j.version, edge: j.edge_version },
+            };
+          }
+          continue;
         }
       } catch (_) {
         /* ещё лежит */
       }
+      webuiOkStreak = 0;
+
+      if (st && st.state === "ok" && normVer(st.version) === normVer(expected)) {
+        // status ok, но /api/version ещё не поднялся — подождём в цикле
+        if (overlayStep) {
+          overlayStep.textContent = "Apply ok, жду ответ панели…";
+        }
+      }
     }
-    return {
-      matched: false,
-      version: last && last.version,
-      edge: last && last.edge_version,
-    };
+    return { ok: false, status: lastStatus, message: "Таймаут ожидания apply" };
   }
 
   async function applyUpdate() {
@@ -155,7 +155,7 @@
       !confirm(
         "Обновить до " +
           pendingTag +
-          "?\n\nСначала edge, затем WebUI.\nСтраница обновится только когда оба компонента будут на этой версии."
+          "?\n\nСначала edge, затем WebUI.\nСтраница обновится, когда панель ответит новой версией."
       )
     ) {
       return;
@@ -198,7 +198,7 @@
       (result.message || "Обновление не завершилось") +
         (st.error ? "\n" + st.error : "") +
         (st.step ? "\nШаг: " + st.step : "") +
-        "\nЛог: /opt/nanopi-edge/update.log"
+        "\nЛог: /opt/nanopi-edge/update.log\nМожно просто обновить страницу (F5)."
     );
   }
 
