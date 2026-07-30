@@ -18,8 +18,7 @@
     <span class="ver-label" title="Версия панели">{{AppVersion}}</span>
   </div>
 </header>
-<div id="toast-host" class="toast-host" aria-live="polite"
-     hx-on::after-swap="clearTimeout(window.__toastHide); window.__toastHide=setTimeout(function(){ document.getElementById('toast-host').innerHTML=''; }, 5000)"></div>
+<div id="toast-host" class="toast-host" aria-live="polite"></div>
 <dialog id="updates-dialog" class="updates-dialog">
   <form method="dialog" class="updates-form">
     <h2>Обновления</h2>
@@ -49,18 +48,21 @@
     </p>
   </div>
 </div>
+<script src="/static/toast.js" defer></script>
 <script src="/static/updates.js" defer></script>
 {{end}}
 
 {{define "partials/flash"}}
 {{if .Message}}
 <div class="toast toast-ok" role="status">
+  <button type="button" class="toast-close" aria-label="Закрыть">×</button>
   <div class="toast-title">Уведомление</div>
   <div class="toast-body">{{.Message}}</div>
 </div>
 {{end}}
 {{if .Error}}
 <div class="toast toast-err" role="alert">
+  <button type="button" class="toast-close" aria-label="Закрыть">×</button>
   <div class="toast-title">Ошибка</div>
   <div class="toast-body">{{.Error}}</div>
 </div>

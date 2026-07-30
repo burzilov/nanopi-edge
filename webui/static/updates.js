@@ -185,7 +185,9 @@
       });
       if (!r.ok && r.status !== 202) {
         hideOverlay();
-        showToast(j.error || "Не удалось запустить обновление", true);
+        if (window.nanopiToast) {
+          window.nanopiToast.show(j.error || "Не удалось запустить обновление", true);
+        }
         return;
       }
     } catch (_) {
@@ -202,33 +204,15 @@
       return;
     }
     const st = result.status || {};
-    showToast(
-      (result.message || "Обновление не завершилось") +
-        (st.error ? "\n" + st.error : "") +
-        (st.step ? "\nШаг: " + st.step : "") +
-        "\nЛог: /opt/nanopi-edge/update.log\nМожно обновить страницу (F5).",
-      true
-    );
-  }
-
-  function showToast(text, isErr) {
-    const host = document.getElementById("toast-host");
-    if (!host) return;
-    host.innerHTML =
-      '<div class="toast ' +
-      (isErr ? "toast-err" : "toast-ok") +
-      '" role="' +
-      (isErr ? "alert" : "status") +
-      '">' +
-      '<div class="toast-title">' +
-      (isErr ? "Ошибка" : "Уведомление") +
-      "</div>" +
-      '<div class="toast-body"></div></div>';
-    host.querySelector(".toast-body").textContent = text;
-    clearTimeout(window.__toastHide);
-    window.__toastHide = setTimeout(function () {
-      host.innerHTML = "";
-    }, 8000);
+    if (window.nanopiToast) {
+      window.nanopiToast.show(
+        (result.message || "Обновление не завершилось") +
+          (st.error ? "\n" + st.error : "") +
+          (st.step ? "\nШаг: " + st.step : "") +
+          "\nЛог: /opt/nanopi-edge/update.log\nМожно обновить страницу (F5).",
+        true
+      );
+    }
   }
 
   if (overlayDismiss) {
