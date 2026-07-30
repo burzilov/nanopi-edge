@@ -1,0 +1,180 @@
+{{define "mobile_vless"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Мобильный VLESS — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/mobile_vless.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="mobile-vless-main">
+    {{template "mobile_vless_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "mobile_vless_inner"}}
+<section>
+  <h1>Мобильный VLESS</h1>
+  <p class="hint">Входящий <strong>VLESS + Reality</strong> на NanoPi для одного телефона
+    (Hiddify). Трафик проходит через те же правила sing-box, что и домашний TUN:
+    заблокированные/Telegram/AI — через активный proxy, <code>.ru</code> — напрямую.</p>
+  <p class="hint warn-hint">Панель без пароля: любой, кто открыл
+    <code>http://10.10.10.1/</code>, может выдать или отозвать этот профиль.
+    Не выставляйте WebUI в интернет.</p>
+  <p class="hint">Порты <code>80</code>/<code>443</code> остаются у Nginx Proxy Manager.
+    Для телефона используется отдельный TCP-порт (по умолчанию <code>8443</code>).
+    Адрес в профиле — публичный WAN IPv4 NanoPi; «маскировочный сайт» ниже —
+    только для Reality handshake/SNI, не endpoint Hiddify.</p>
+
+  <div class="card ports-card">
+    <dl class="pm-meta">
+      <div>
+        <dt>Состояние</dt>
+        <dd>
+          {{if .Enabled}}<span class="pill ok">включён</span>{{else}}<span class="pill">выкл</span>{{end}}
+          {{if .ProfileActive}} · профиль активен{{else}} · профиля нет{{end}}
+          {{if .InboundPresent}} · inbound в config{{else}}{{if .Enabled}} · <span class="pill">нет в config</span>{{end}}{{end}}
+        </dd>
+      </div>
+      <div>
+        <dt>Listener</dt>
+        <dd>
+          <code>0.0.0.0:{{.Port}}</code>
+          {{if .ListenOK}}<span class="pill ok">слушает</span>{{else}}<span class="pill">не слушает</span>{{end}}
+          · sing-box {{if .ServiceActive}}<span class="pill ok">active</span>{{else}}<span class="pill">не active</span>{{end}}
+        </dd>
+      </div>
+      <div>
+        <dt>WAN IPv4</dt>
+        <dd>{{if .WanIP}}<code>{{.WanIP}}</code>{{else}}—{{end}}
+          {{if .WanIPs}}{{range $i, $ip := .WanIPs}}{{if $i}}, {{end}}{{if ne $ip $.WanIP}}<code>{{$ip}}</code>{{end}}{{end}}{{end}}
+        </dd>
+      </div>
+      <div>
+        <dt>Маскировка</dt>
+        <dd>{{if .HandshakeServer}}<code>{{.HandshakeServer}}:{{.HandshakePort}}</code> · SNI <code>{{.ServerName}}</code>{{else}}—{{end}}</dd>
+      </div>
+      {{if .CreatedAt}}
+      <div>
+        <dt>Профиль создан</dt>
+        <dd><code>{{.CreatedAt}}</code>{{if .Label}} · {{.Label}}{{end}}</dd>
+      </div>
+      {{end}}
+    </dl>
+    {{if .Hint}}<p class="hint ports-hairpin-meta">{{.Hint}}</p>{{end}}
+    {{if .CheckMsg}}
+      <p class="hint {{if .CheckOK}}ok-hint{{else}}warn-hint{{end}}">Проверка сайта: {{.CheckMsg}}</p>
+    {{end}}
+
+    <form class="ports-form" id="mv-settings"
+          hx-post="/mobile-vless/settings"
+          hx-target="#mobile-vless-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label>Порт TCP
+          <input name="port" type="number" min="1" max="65535" value="{{.Port}}" required>
+        </label>
+        <label class="grow">Маскировочный TLS-сайт
+          <input name="handshake_server" type="text" value="{{.HandshakeServer}}"
+                 placeholder="www.cloudflare.com" required autocomplete="off">
+        </label>
+        <label>Порт сайта
+          <input name="handshake_port" type="number" min="1" max="65535" value="{{.HandshakePort}}" required>
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow">SNI (server_name)
+          <input name="server_name" type="text" value="{{.ServerName}}"
+                 placeholder="www.cloudflare.com" required autocomplete="off">
+        </label>
+        <label>Метка профиля
+          <input name="label" type="text" value="{{.Label}}" placeholder="mobile" autocomplete="off">
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow">Пресет (подставит поля; всё равно проверьте)
+          <select id="mv-preset" onchange="nanopiApplyVlessPreset(this)">
+            <option value="">— выбрать —</option>
+            {{range .Presets}}
+            <option value="{{.Server}}|{{.Port}}|{{.SNI}}">{{.Name}}</option>
+            {{end}}
+          </select>
+        </label>
+      </div>
+      <div class="ports-add-actions">
+        <button type="submit" formaction="/mobile-vless/check" formmethod="post"
+                hx-post="/mobile-vless/check" hx-target="#mobile-vless-main" hx-swap="innerHTML"
+                class="secondary">Проверить сайт</button>
+        <button type="submit">Сохранить и включить</button>
+      </div>
+    </form>
+
+    <div class="ports-add-actions" style="margin-top:1rem">
+      {{if not .ProfileActive}}
+      <form hx-post="/mobile-vless/profile/create" hx-target="#mobile-vless-main" hx-swap="innerHTML"
+            hx-include="#mv-settings">
+        <button type="submit">Создать профиль</button>
+      </form>
+      {{else}}
+      <form hx-post="/mobile-vless/profile/show" hx-target="#mv-profile" hx-swap="innerHTML">
+        <button type="submit" class="secondary">Показать профиль (URI + QR)</button>
+      </form>
+      <form hx-post="/mobile-vless/profile/rotate" hx-target="#mobile-vless-main" hx-swap="innerHTML"
+            hx-confirm="Старый QR перестанет работать. Продолжить?">
+        <button type="submit" class="secondary">Перевыпустить профиль</button>
+      </form>
+      <form hx-post="/mobile-vless/profile/revoke" hx-target="#mobile-vless-main" hx-swap="innerHTML"
+            hx-confirm="Отозвать профиль и выключить inbound на 8443?">
+        <button type="submit" class="danger">Отозвать и выключить</button>
+      </form>
+      {{end}}
+    </div>
+
+    <div id="mv-profile" class="mv-profile" style="margin-top:1rem">
+      {{if .ProfileURI}}
+        {{template "mobile_vless_profile" .}}
+      {{else}}
+        <p class="hint">URI и QR не хранятся на странице — нажмите «Показать профиль».</p>
+      {{end}}
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:1rem">
+    <h2>Проверка</h2>
+    <ol class="hint">
+      <li>С Wi‑Fi (Hiddify выкл.) убедитесь, что сайты NPM на 80/443 работают как раньше.</li>
+      <li>Импортируйте QR в Hiddify, включите в домашнем Wi‑Fi — подключение к WAN IP:порту.</li>
+      <li>Выключите Wi‑Fi, повторите из мобильной сети (это же проверка внешнего доступа к порту).</li>
+      <li>Проверьте ресурс из proxy-правил (например ipify) и любой <code>.ru</code> для direct.</li>
+    </ol>
+  </div>
+</section>
+{{template "oob/toast" .}}
+{{end}}
+
+{{define "mobile_vless_profile"}}
+{{if .Error}}
+<p class="hint warn-hint">{{.Error}}</p>
+{{else}}
+<div class="mv-profile-box">
+  <p class="hint warn-hint">Секретный URI. Не отправляйте в чаты и не оставляйте вкладку открытой
+    на чужом устройстве. После перезагрузки страницы блок скроется.</p>
+  {{if .ProfileQR}}
+  <p><img class="mv-qr" src="{{.ProfileQR}}" width="220" height="220" alt="QR VLESS"></p>
+  {{end}}
+  <label>VLESS URI
+    <textarea id="mv-uri" readonly rows="4">{{.ProfileURI}}</textarea>
+  </label>
+  <div class="ports-add-actions">
+    <button type="button" class="secondary" onclick="nanopiCopyVlessURI()">Копировать URI</button>
+  </div>
+</div>
+{{end}}
+{{end}}

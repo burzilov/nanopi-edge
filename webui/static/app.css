@@ -312,7 +312,7 @@ code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 4px; }
   font: inherit;
 }
 .ports-port { flex: 0 0 7rem; }
-.ports-add-actions { display: flex; align-items: flex-end; }
+.ports-add-actions { display: flex; align-items: flex-end; gap: 0.5rem; flex-wrap: wrap; }
 .ports-toggle { min-width: 2.4rem; padding: 0.3rem 0.45rem; }
 form.inline { display: inline; margin: 0; }
 
@@ -331,4 +331,27 @@ form.inline { display: inline; margin: 0; }
   font-weight: 600;
 }
 .pm-meta dd { margin: 0.25rem 0 0; }
+
+.warn-hint { color: var(--danger); }
+.ok-hint { color: var(--accent); }
+.mv-profile-box textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem;
+  background: #fff;
+  color: var(--fg);
+  word-break: break-all;
+}
+.mv-qr {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0.5rem;
+}
 

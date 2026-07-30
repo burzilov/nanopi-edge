@@ -11,6 +11,7 @@
 #
 # Повседневное управление — /opt/nanopi-edge/scripts/:
 #   router-on | lab-on | wan-dhcp | wan-pppoe | wan-status | proxy-select | hairpin-dns-refresh
+#   inbound-status   # метаданные мобильного VLESS (без секретов)
 #
 set -euo pipefail
 
@@ -21,6 +22,7 @@ SCRIPTS_DIR="$OPT_ROOT/scripts"
 OPT_ENV="$OPT_ROOT/.env"
 SB_DIR=/etc/sing-box
 SB_CFG="$SB_DIR/config.json"
+MOBILE_VLESS_STATE="$SB_DIR/inbound-vless-reality.json"
 UNIT_DST=/etc/systemd/system/sing-box.service
 NETPLAN_DIR=/etc/netplan
 SELF_INSTALL="$OPT_ROOT/install-singbox.sh"
@@ -203,7 +205,8 @@ cmd_status() {
 write_ops_scripts() {
   explain \
     "Запишу постоянные утилиты в ${SCRIPTS_DIR}/
-(router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, hairpin-dns-refresh, common.sh).
+(router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, hairpin-dns-refresh,
+inbound-status, common.sh).
 Они читают ${OPT_ENV} и не зависят от install.sh — его потом можно удалить." \
     "Скрипты executable на месте"
 
@@ -977,10 +980,62 @@ else
 fi
 EOF
 
+  cat > "$SCRIPTS_DIR/inbound-status" <<'EOF'
+#!/bin/bash
+# Метаданные мобильного VLESS inbound (без UUID/ключей/URI).
+set -euo pipefail
+# shellcheck disable=SC1091
+source /opt/nanopi-edge/scripts/common.sh
+nanopi_load_env
+
+STATE="${MOBILE_VLESS_STATE:-/etc/sing-box/inbound-vless-reality.json}"
+CFG="${SINGBOX_CONFIG:-/etc/sing-box/config.json}"
+
+enabled=false
+port=0
+configured=false
+inbound_present=false
+listen_ok=false
+
+if [[ -f "$STATE" ]]; then
+  enabled=$(jq -r '.enabled // false' "$STATE" 2>/dev/null || echo false)
+  port=$(jq -r '.port // 8443' "$STATE" 2>/dev/null || echo 0)
+  if jq -e '(.uuid // "") != "" and (.private_key // "") != ""' "$STATE" >/dev/null 2>&1; then
+    configured=true
+  fi
+fi
+
+if [[ -f "$CFG" ]] && jq -e '.inbounds[]? | select(.tag=="vless-mobile")' "$CFG" >/dev/null 2>&1; then
+  inbound_present=true
+fi
+
+if [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -gt 0 ]]; then
+  if ss -ltn 2>/dev/null | grep -qE ":${port}\\b"; then
+    listen_ok=true
+  fi
+fi
+
+jq -n \
+  --argjson enabled "$enabled" \
+  --argjson port "${port:-0}" \
+  --argjson configured "$configured" \
+  --argjson inbound_present "$inbound_present" \
+  --argjson listen_ok "$listen_ok" \
+  --arg singbox "$(systemctl is-active sing-box 2>/dev/null || echo unknown)" \
+  '{
+    enabled: $enabled,
+    port: $port,
+    configured: $configured,
+    inbound_present: $inbound_present,
+    listen_ok: $listen_ok,
+    singbox: $singbox
+  }'
+EOF
+
   chmod 755 "$SCRIPTS_DIR"/router-on "$SCRIPTS_DIR"/lab-on \
     "$SCRIPTS_DIR"/wan-dhcp "$SCRIPTS_DIR"/wan-pppoe \
     "$SCRIPTS_DIR"/wan-status "$SCRIPTS_DIR"/proxy-select \
-    "$SCRIPTS_DIR"/hairpin-dns-refresh
+    "$SCRIPTS_DIR"/hairpin-dns-refresh "$SCRIPTS_DIR"/inbound-status
   chmod 644 "$SCRIPTS_DIR/common.sh"
 }
 
@@ -1111,6 +1166,7 @@ EOF
     printf '%s\n' "$keep_hairpin" >>"$OPT_ENV"
   fi
   chmod 600 "$OPT_ENV"
+  # Не трогаем inbound-vless-reality.json (секреты мобильного VLESS).
   rm -f "$SB_DIR/clash-api.secret" "$SB_DIR/ui.env" "$SB_DIR/.env"
 }
 
@@ -1139,6 +1195,7 @@ write_dotenv_merge() {
   env_set_kv WAN_MODE "$wan_mode"
   env_set_kv PPPOE_USER "$pppoe_user"
   env_set_kv PPPOE_VLAN "$pppoe_vlan"
+  # Не трогаем inbound-vless-reality.json (секреты мобильного VLESS).
   rm -f "$SB_DIR/clash-api.secret" "$SB_DIR/ui.env" "$SB_DIR/.env"
 }
 
@@ -1298,7 +1355,8 @@ build_singbox_config() {
 
   explain \
     "Соберу единый ${SB_CFG}: TUN, AdGuard DoH, remote ruleset’ы, VLESS,
-selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (антипетля)." \
+selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (антипетля).
+Если есть ${MOBILE_VLESS_STATE} (мобильный VLESS) — восстановлю inbound." \
     "sing-box check успешен; mode 0600"
 
   if [[ -f "$SB_CFG" ]]; then
@@ -1452,9 +1510,78 @@ selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (анти�
   ' > "$SB_CFG"
   chmod 600 "$SB_CFG"
 
+  apply_mobile_vless_inbound
+
   "$SINGBOX_BIN" check -c "$SB_CFG"
   ok "config check passed"
   CONFIG_REBUILT=1
+}
+
+# Восстановить tagged inbound vless-mobile из отдельного 0600-файла состояния.
+# Не создаёт inbound автоматически; неверное состояние — WARN, базовый конфиг без inbound.
+apply_mobile_vless_inbound() {
+  local state="${MOBILE_VLESS_STATE}"
+  if [[ ! -f "$state" ]]; then
+    return 0
+  fi
+  if ! jq -e . "$state" >/dev/null 2>&1; then
+    echo "WARN: ${state} невалидный JSON — мобильный VLESS не восстановлен" >&2
+    return 0
+  fi
+  local enabled
+  enabled=$(jq -r '.enabled // false' "$state")
+  if [[ "$enabled" != "true" ]]; then
+    # убедиться, что старый inbound не остался после пересборки (его и так нет в свежем jq)
+    info "мобильный VLESS выключен в ${state} — inbound не добавляю"
+    return 0
+  fi
+  local uuid pk sid port hs hsport sni
+  uuid=$(jq -r '.uuid // empty' "$state")
+  pk=$(jq -r '.private_key // empty' "$state")
+  sid=$(jq -r '.short_id // empty' "$state")
+  port=$(jq -r '.port // 8443' "$state")
+  hs=$(jq -r '.handshake_server // empty' "$state")
+  hsport=$(jq -r '.handshake_port // 443' "$state")
+  sni=$(jq -r '.server_name // empty' "$state")
+  if [[ -z "$uuid" || -z "$pk" || -z "$sid" || -z "$hs" || -z "$sni" ]]; then
+    echo "WARN: ${state} enabled, но не хватает полей (uuid/private_key/short_id/handshake/server_name) — inbound не добавлен, файл сохранён" >&2
+    return 0
+  fi
+  if [[ "$port" == "80" || "$port" == "443" ]]; then
+    echo "WARN: мобильный VLESS порт ${port} конфликтует с NPM — inbound не добавлен" >&2
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp)
+  if ! jq --arg uuid "$uuid" --arg pk "$pk" --arg sid "$sid" \
+      --argjson port "$port" --arg hs "$hs" --argjson hsport "$hsport" --arg sni "$sni" '
+    (.inbounds // []) as $ins |
+    ($ins | map(select(.tag != "vless-mobile"))) as $base |
+    .inbounds = ($base + [{
+      type: "vless",
+      tag: "vless-mobile",
+      listen: "0.0.0.0",
+      listen_port: $port,
+      users: [{ uuid: $uuid, flow: "xtls-rprx-vision" }],
+      tls: {
+        enabled: true,
+        server_name: $sni,
+        reality: {
+          enabled: true,
+          handshake: { server: $hs, server_port: $hsport },
+          private_key: $pk,
+          short_id: [$sid]
+        }
+      }
+    }])
+  ' "$SB_CFG" > "$tmp"; then
+    rm -f "$tmp"
+    echo "WARN: не удалось вставить vless-mobile в config.json" >&2
+    return 0
+  fi
+  mv "$tmp" "$SB_CFG"
+  chmod 600 "$SB_CFG"
+  ok "восстановлен inbound vless-mobile (port ${port})"
 }
 
 # Короткое имя → outbound tag: germany → vless-germany (уже с префиксом не трогаем).
@@ -1663,6 +1790,32 @@ clash_api, ${SCRIPTS_DIR}/proxy-select get." \
     ok "proxy-select get"
   else
     fail "proxy-select get"; failed=1
+  fi
+
+  # Мобильный VLESS: только если состояние включено — inbound и listener
+  if [[ -f "$MOBILE_VLESS_STATE" ]] && jq -e '.enabled == true' "$MOBILE_VLESS_STATE" >/dev/null 2>&1; then
+    local mv_port
+    mv_port=$(jq -r '.port // 8443' "$MOBILE_VLESS_STATE")
+    if jq -e '.inbounds[]? | select(.tag=="vless-mobile")' "$SB_CFG" >/dev/null 2>&1; then
+      ok "config содержит inbound vless-mobile"
+    else
+      fail "enabled мобильный VLESS, но нет inbound vless-mobile в config"; failed=1
+    fi
+    if ss -ltn 2>/dev/null | grep -qE ":${mv_port}\\b"; then
+      ok "слушает TCP :${mv_port}"
+    else
+      fail "не слушает TCP :${mv_port}"; failed=1
+    fi
+    # NPM DNAT 80/443 не должен пропасть из‑за мобильного VLESS
+    if [[ -f /etc/nftables.d/nanopi-port-forwards.nft ]]; then
+      if grep -qE 'dport (80|443)' /etc/nftables.d/nanopi-port-forwards.nft 2>/dev/null; then
+        ok "port-forwards 80/443 на месте (NPM)"
+      else
+        info "port-forwards без 80/443 — ок, если NPM не настроен"
+      fi
+    fi
+  else
+    ok "мобильный VLESS не включён — пропускаю проверку :8443"
   fi
 
   echo
