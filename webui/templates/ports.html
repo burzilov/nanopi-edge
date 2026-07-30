@@ -20,44 +20,10 @@
 {{define "ports_inner"}}
 <section>
   <h1>Проброс портов</h1>
-  <p class="hint">Куда слать входящие <strong>80/443</strong> с белого IP. Для NPM указывай
-    IP виртуалки в домашней сети (<code>192.168.1.137</code>), не WAN роутера.</p>
+  <p class="hint">Входящие с белого IP (WAN/ppp0) → хост за NanoPi.
+    Для NPM в домашней LAN указывай IP виртуалки (<code>192.168.1.137</code>) и задай маршрут ниже.</p>
   {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
   {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
-
-  <div class="card ports-card">
-    <h2 class="card-title">Доступ из дома по белому IP</h2>
-    <p class="hint">Нужно, если домен резолвится в белый IP (так делает корпоративный VPN).
-      NanoPi сам перекинет запрос на NPM. Без галочки из дома по белому IP не открыть.</p>
-    <form class="ports-form"
-          hx-post="/ports/lan-hairpin"
-          hx-target="#ports-main"
-          hx-swap="innerHTML">
-      <div class="row">
-        <label class="grow">
-          <input type="checkbox" name="enabled" value="1" {{if .LanHairpin}}checked{{end}}>
-          Включить
-        </label>
-      </div>
-      <div class="row">
-        <label class="grow">Домашняя сеть (за роутером)
-          <input name="home_net" type="text" value="{{.HomeNet}}"
-                 placeholder="192.168.1.0/24" pattern="^[0-9./]+$">
-        </label>
-        <label class="grow">WAN роутера на стороне NanoPi
-          <input name="home_via" type="text" value="{{.HomeVia}}"
-                 placeholder="10.10.10.179" pattern="^[0-9.]+$">
-        </label>
-        <div class="ports-add-actions">
-          <button type="submit">Сохранить</button>
-        </div>
-      </div>
-    </form>
-    <p class="hint ports-hairpin-meta">
-      {{if .HairpinWanIPs}}Белый IP сейчас: {{range $i, $ip := .HairpinWanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{else}}Белый IP пока нет{{end}}
-      · {{if .LanHairpin}}<span class="pill ok">вкл</span>{{else}}<span class="pill">выкл</span>{{end}}
-    </p>
-  </div>
 
   <div class="card ports-card">
     <h2 class="card-title">Правила</h2>
@@ -130,7 +96,7 @@
         <label class="ports-port">WAN-порт
           <input name="wan_port" type="number" min="1" max="65535" required placeholder="443">
         </label>
-        <label class="grow">IP назначения (NPM)
+        <label class="grow">IP назначения
           <input name="dest_ip" type="text" required placeholder="192.168.1.137" pattern="^[0-9.]+$">
         </label>
         <label class="ports-port">Порт
@@ -148,27 +114,28 @@
     </form>
   </div>
 
-  <details class="ports-card card">
-    <summary class="card-title">Дополнительно: подмена DNS (без VPN)</summary>
-    <p class="hint">Если VPN выключен и клиенты используют DNS <code>10.10.10.1</code>,
-      dnsmasq может подменять белый IP на адрес NPM. При включённом корп. VPN обычно не помогает.</p>
+  <div class="card ports-card">
+    <h2 class="card-title">Маршрут к LAN за роутером</h2>
+    <p class="hint">Нужен, если назначение не в <code>10.10.10.0/24</code>, а за CPE
+      (например NPM <code>192.168.1.137</code>). Пустые поля — маршрут снять.</p>
     <form class="ports-form"
-          hx-post="/ports/hairpin"
+          hx-post="/ports/home-route"
           hx-target="#ports-main"
           hx-swap="innerHTML">
       <div class="row">
-        <label class="grow">LAN IP для alias
-          <input name="target" type="text" value="{{.HairpinTarget}}"
-                 placeholder="192.168.1.137" pattern="^$|^[0-9.]+$">
+        <label class="grow">Домашняя сеть
+          <input name="home_net" type="text" value="{{.HomeNet}}"
+                 placeholder="192.168.1.0/24" pattern="^$|^[0-9./]+$">
+        </label>
+        <label class="grow">WAN роутера (via)
+          <input name="home_via" type="text" value="{{.HomeVia}}"
+                 placeholder="10.10.10.179" pattern="^$|^[0-9.]+$">
         </label>
         <div class="ports-add-actions">
-          <button type="submit">Сохранить DNS alias</button>
+          <button type="submit">Сохранить</button>
         </div>
       </div>
     </form>
-    <p class="hint ports-hairpin-meta">
-      alias {{if .HairpinActive}}<span class="pill ok">активен</span>{{else}}<span class="pill">выкл</span>{{end}}
-    </p>
-  </details>
+  </div>
 </section>
 {{end}}

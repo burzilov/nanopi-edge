@@ -43,7 +43,7 @@ func TestRenderNft(t *testing.T) {
 		{ID: "2", Enabled: false, Proto: "udp", WanPort: 53, DestIP: "10.10.10.53", DestPort: 53},
 		{ID: "3", Enabled: true, Proto: "both", WanPort: 51820, DestIP: "10.10.10.2", DestPort: 51820},
 	}}
-	out := RenderNft(s, []string{"end0", "ppp0"}, "enp1s0", nil)
+	out := RenderNft(s, []string{"end0", "ppp0"}, "enp1s0")
 	if !strings.Contains(out, `iifname { "end0", "ppp0" } tcp dport 443 dnat ip to 10.10.10.50:443 # npm`) {
 		t.Fatalf("missing tcp 443 rule:\n%s", out)
 	}
@@ -53,23 +53,25 @@ func TestRenderNft(t *testing.T) {
 	if !strings.Contains(out, "tcp dport 51820") || !strings.Contains(out, "udp dport 51820") {
 		t.Fatalf("both should emit tcp+udp:\n%s", out)
 	}
+	if strings.Contains(out, "masquerade") {
+		t.Fatal("no home route → no masquerade")
+	}
 }
 
-func TestRenderNftLanHairpin(t *testing.T) {
+func TestRenderNftHomeRoute(t *testing.T) {
 	s := Store{
-		LanHairpin: true,
-		HomeNet:    "192.168.1.0/24",
-		HomeVia:    "10.10.10.179",
+		HomeNet: "192.168.1.0/24",
+		HomeVia: "10.10.10.179",
 		Rules: []Rule{
 			{ID: "1", Enabled: true, Proto: "tcp", WanPort: 443, DestIP: "192.168.1.137", DestPort: 443},
 		},
 	}
-	out := RenderNft(s, []string{"end0"}, "enp1s0", []string{"195.122.250.213"})
-	if !strings.Contains(out, `iifname "enp1s0" ip daddr { 195.122.250.213 } tcp dport 443 dnat ip to 192.168.1.137:443`) {
-		t.Fatalf("missing lan hairpin:\n%s", out)
+	out := RenderNft(s, []string{"end0"}, "enp1s0")
+	if strings.Contains(out, `ip daddr {`) {
+		t.Fatalf("LAN white-IP DNAT must be gone:\n%s", out)
 	}
 	if !strings.Contains(out, `oifname "enp1s0" ip daddr 192.168.1.0/24 masquerade`) {
-		t.Fatalf("missing masquerade:\n%s", out)
+		t.Fatalf("missing masquerade for home LAN:\n%s", out)
 	}
 }
 
@@ -86,7 +88,6 @@ func TestEnsureNftInclude(t *testing.T) {
 	if !strings.Contains(string(b), "nanopi-port-forwards.nft") {
 		t.Fatalf("include not added: %s", b)
 	}
-	// second call no-op
 	if err := EnsureNftInclude(conf); err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@
 # не пересобирает /etc/sing-box/config.json.
 #
 # Повседневное управление — /opt/nanopi-edge/scripts/:
-#   router-on | lab-on | wan-dhcp | wan-pppoe | wan-status | proxy-select | hairpin-dns-refresh
+#   router-on | lab-on | wan-dhcp | wan-pppoe | wan-status | proxy-select
 #
 set -euo pipefail
 
@@ -203,7 +203,7 @@ cmd_status() {
 write_ops_scripts() {
   explain \
     "Запишу постоянные утилиты в ${SCRIPTS_DIR}/
-(router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, hairpin-dns-refresh, common.sh).
+(router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, common.sh).
 Они читают ${OPT_ENV} и не зависят от install.sh — его потом можно удалить." \
     "Скрипты executable на месте"
 
@@ -231,51 +231,8 @@ nanopi_load_env() {
   WAN_MODE=${WAN_MODE:-dhcp}
   PPPOE_USER=${PPPOE_USER:-}
   PPPOE_VLAN=${PPPOE_VLAN:-}
-  HAIRPIN_DNS_TARGET=${HAIRPIN_DNS_TARGET:-}
 }
 
-# Локальный DNS hairpin: A-записи с белым IP WAN → HAIRPIN_DNS_TARGET (напр. NPM в LAN роутера).
-# В публичном скрипте IP нет — только опциональный ключ в /opt/nanopi-edge/.env.
-# Клиентам дома: DHCP DNS = 10.10.10.1 (NanoPi).
-nanopi_write_hairpin_dns_alias() {
-  local conf=/etc/dnsmasq.d/hairpin-alias.conf
-  local target="${HAIRPIN_DNS_TARGET:-}"
-  mkdir -p /etc/dnsmasq.d
-  if [[ -z "$target" ]]; then
-    rm -f "$conf"
-    return 0
-  fi
-  if ! [[ "$target" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    echo "WARN: HAIRPIN_DNS_TARGET='$target' не IPv4 — alias не пишу" >&2
-    return 0
-  fi
-  local -a wan_ips=()
-  local ifc ip
-  for ifc in "${WAN_IF:-end0}" ppp0; do
-    ip link show "$ifc" &>/dev/null || continue
-    while read -r ip; do
-      [[ -n "$ip" && "$ip" != "$target" ]] || continue
-      wan_ips+=("$ip")
-    done < <(ip -4 -o addr show dev "$ifc" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
-  done
-  if [[ ${#wan_ips[@]} -eq 0 ]]; then
-    printf '%s\n' \
-      "# Managed by nanopi-edge — HAIRPIN_DNS_TARGET=${target}" \
-      "# WAN IPv4 пока нет; перезапишется после wan-dhcp/wan-pppoe / hairpin-dns-refresh" \
-      >"$conf"
-    return 0
-  fi
-  {
-    echo "# Managed by nanopi-edge — hairpin DNS (do not edit)"
-    echo "# HAIRPIN_DNS_TARGET=${target}  (из ${ENV_FILE})"
-    local seen=""
-    for ip in "${wan_ips[@]}"; do
-      [[ " $seen " == *" $ip "* ]] && continue
-      seen+=" $ip"
-      echo "alias=${ip},${target}"
-    done
-  } >"$conf"
-}
 
 nanopi_set_env_kv() {
   local key="$1" val="$2"
@@ -452,7 +409,6 @@ nanopi_ensure_lan_dual_serve() {
 
   nanopi_write_lan_netplan "$lan"
   nanopi_write_dnsmasq_lan "$lan" "$wan"
-  nanopi_write_hairpin_dns_alias
   nanopi_write_nft "$wan"
   nanopi_write_pppoe_server_opts
   # не затираем WAN-клиентские строки — вызывающий пишет secrets сам
@@ -580,9 +536,6 @@ ip link set "$WAN_IF" up || true
 # nftables снова (после netplan); exclude + restart sing-box — последним
 nanopi_restart_nftables
 nanopi_patch_singbox_exclude
-# белый IP мог появиться после DHCP — обновить dnsmasq alias
-nanopi_write_hairpin_dns_alias
-systemctl restart dnsmasq
 
 echo "[ok] wan-dhcp. WAN_MODE=dhcp"
 EOF
@@ -724,12 +677,7 @@ systemctl restart "$WAN_PPPOE_UNIT"
 # nftables снова; exclude + restart sing-box — последним (после flush)
 nanopi_restart_nftables
 nanopi_patch_singbox_exclude
-# ppp0 IP может подняться чуть позже — alias обновим сейчас и дадим CLI refresh
-nanopi_write_hairpin_dns_alias
-systemctl restart dnsmasq
-
 echo "[ok] wan-pppoe. Жди UP ppp0: journalctl -u ${WAN_PPPOE_UNIT} -f"
-echo "    После UP ppp0: ${SCRIPT_DIR}/hairpin-dns-refresh"
 EOF
 
   cat > "$SCRIPTS_DIR/wan-status" <<'EOF'
@@ -956,28 +904,10 @@ case "$cmd" in
 esac
 EOF
 
-  cat > "$SCRIPTS_DIR/hairpin-dns-refresh" <<'EOF'
-#!/bin/bash
-# Переписать /etc/dnsmasq.d/hairpin-alias.conf по HAIRPIN_DNS_TARGET + текущим WAN IP.
-set -euo pipefail
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/common.sh"
-nanopi_load_env
-nanopi_write_hairpin_dns_alias
-if [[ -n "${HAIRPIN_DNS_TARGET:-}" ]]; then
-  systemctl restart dnsmasq
-  echo "[ok] hairpin alias → ${HAIRPIN_DNS_TARGET}; dig @10.10.10.1 <домен>"
-else
-  systemctl restart dnsmasq 2>/dev/null || true
-  echo "[ok] HAIRPIN_DNS_TARGET пуст — alias удалён"
-fi
-EOF
 
   chmod 755 "$SCRIPTS_DIR"/router-on "$SCRIPTS_DIR"/lab-on \
     "$SCRIPTS_DIR"/wan-dhcp "$SCRIPTS_DIR"/wan-pppoe \
-    "$SCRIPTS_DIR"/wan-status "$SCRIPTS_DIR"/proxy-select \
-    "$SCRIPTS_DIR"/hairpin-dns-refresh
+    "$SCRIPTS_DIR"/wan-status "$SCRIPTS_DIR"/proxy-select
   chmod 644 "$SCRIPTS_DIR/common.sh"
 }
 
@@ -1080,13 +1010,8 @@ write_dotenv_fresh() {
   local wan_mode=${WAN_MODE:-dhcp}
   local pppoe_user=${PPPOE_USER:-}
   local pppoe_vlan=${PPPOE_VLAN:-}
-  local keep_hairpin=""
   mkdir -p "$OPT_ROOT" "$SB_DIR"
   umask 077
-  # персональный hairpin не в git — сохраняем при перезаписи .env
-  if [[ -f "$OPT_ENV" ]]; then
-    keep_hairpin=$(grep -E '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" 2>/dev/null | tail -1 || true)
-  fi
   cat > "$OPT_ENV" <<EOF
 # NanoPi edge — читают scripts/* и webui
 CLASH_API=http://127.0.0.1:9090
@@ -1100,13 +1025,7 @@ LAN_IF=${LAN_IF}
 WAN_MODE=${wan_mode}
 PPPOE_USER=${pppoe_user}
 PPPOE_VLAN=${pppoe_vlan}
-# Опционально (не коммитить значение): LAN IP NPM → dnsmasq alias белый→этот IP
-# HAIRPIN_DNS_TARGET=192.168.x.x
-# /opt/nanopi-edge/scripts/hairpin-dns-refresh ; DNS клиентов роутера = 10.10.10.1
 EOF
-  if [[ -n "$keep_hairpin" ]]; then
-    printf '%s\n' "$keep_hairpin" >>"$OPT_ENV"
-  fi
   chmod 600 "$OPT_ENV"
   rm -f "$SB_DIR/clash-api.secret" "$SB_DIR/ui.env" "$SB_DIR/.env"
 }
@@ -1212,82 +1131,6 @@ Lab-кабель сейчас в WAN-разъёме." \
   [[ "$WAN_IF" != "$LAN_IF" ]] || die "WAN и LAN не должны совпадать"
 }
 
-prompt_hairpin_dns() {
-  # Фоновый апдейт из WebUI: не спрашиваем, только освежаем alias если ключ уже есть.
-  if [[ "${NANOPI_YES:-}" == "1" ]]; then
-    local existing=""
-    if [[ -f "$OPT_ENV" ]] && grep -q '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" 2>/dev/null; then
-      existing=$(grep -E '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" | tail -1 | cut -d= -f2- | tr -d '\r')
-    fi
-    HAIRPIN_DNS_TARGET=$existing
-    if [[ -n "$existing" && -x "$SCRIPTS_DIR/hairpin-dns-refresh" ]]; then
-      # shellcheck disable=SC1091
-      source "$SCRIPTS_DIR/common.sh"
-      nanopi_load_env 2>/dev/null || true
-      HAIRPIN_DNS_TARGET=$existing
-      nanopi_write_hairpin_dns_alias
-      if systemctl is-active --quiet dnsmasq 2>/dev/null; then
-        systemctl restart dnsmasq || true
-      fi
-      info "Hairpin DNS (NANOPI_YES): ${existing}"
-    else
-      info "Hairpin DNS (NANOPI_YES): пропуск"
-    fi
-    return 0
-  fi
-
-  explain \
-    "Опционально: hairpin DNS для доменов NPM из домашней LAN.
-Укажи LAN IP NPM (или хоста за роутером). dnsmasq подменит A-записи
-с белым IP WAN на этот адрес. Пусто / Enter без значения = не использовать.
-Потом на роутере: DNS клиентов = 10.10.10.1. Значение только в ${OPT_ENV}, не в git.
-При upgrade: Enter = оставить текущее; «-» = выключить." \
-    "HAIRPIN_DNS_TARGET в ${OPT_ENV} или отсутствует"
-
-  local def=""
-  if [[ -f "$OPT_ENV" ]] && grep -q '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" 2>/dev/null; then
-    def=$(grep -E '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" | tail -1 | cut -d= -f2- | tr -d '\r')
-  fi
-
-  local val
-  val=$(ask "LAN IP для hairpin DNS (NPM)" "$def")
-  val=${val//[[:space:]]/}
-  if [[ "$val" == "-" || "$val" == "none" || "$val" == "off" ]]; then
-    val=""
-  fi
-  if [[ -z "$val" ]]; then
-    if [[ -f "$OPT_ENV" ]]; then
-      # убрать ключ, чтобы не остался пустой/старый
-      local tmp
-      tmp=$(mktemp)
-      grep -v '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" >"$tmp" || true
-      mv "$tmp" "$OPT_ENV"
-      chmod 600 "$OPT_ENV"
-    fi
-    HAIRPIN_DNS_TARGET=""
-    info "Hairpin DNS выключен / пропущен"
-    return 0
-  fi
-  if ! [[ "$val" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    die "HAIRPIN_DNS_TARGET: нужен IPv4, «-» или пусто"
-  fi
-  env_set_kv HAIRPIN_DNS_TARGET "$val"
-  HAIRPIN_DNS_TARGET=$val
-  info "HAIRPIN_DNS_TARGET=${val}"
-
-  # если router уже жив — сразу применить alias
-  if [[ -x "$SCRIPTS_DIR/hairpin-dns-refresh" ]]; then
-    # shellcheck disable=SC1091
-    source "$SCRIPTS_DIR/common.sh"
-    nanopi_load_env 2>/dev/null || true
-    HAIRPIN_DNS_TARGET=$val
-    nanopi_write_hairpin_dns_alias
-    if systemctl is-active --quiet dnsmasq 2>/dev/null; then
-      systemctl restart dnsmasq
-      info "dnsmasq alias обновлён"
-    fi
-  fi
-}
 
 build_singbox_config() {
   local nodes_file="$1" secret="$2" default_tag="$3"
@@ -1691,9 +1534,7 @@ print_cutover() {
 
 1) Клиенты роутера — убрать «старый» gateway/DNS
    • Gateway = сам роутер (обычно 192.168.1.1), НЕ старый прокси/VM.
-   • DNS = роутер; для hairpin доменов NPM → DNS = 10.10.10.1 и
-     HAIRPIN_DNS_TARGET в ${OPT_ENV} + ${SCRIPTS_DIR}/hairpin-dns-refresh
-     (см. README § «Домены NPM из домашней LAN»).
+   • DNS = роутер (обычно сам роутер).
 
 2) Роутерный профиль на NanoPi (lab-кабель ещё можно не трогать)
    ${SCRIPTS_DIR}/router-on
@@ -1872,8 +1713,6 @@ EOF
     env_set_kv EDGE_VERSION "$EDGE_VERSION"
   fi
 
-  step 8b "Hairpin DNS (опционально)"
-  prompt_hairpin_dns
 
   step 9 "config.json"
   maybe_rebuild_config "$CLASH_SECRET_VALUE"

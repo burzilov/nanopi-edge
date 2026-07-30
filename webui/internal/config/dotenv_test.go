@@ -12,28 +12,28 @@ func TestSetGetDeleteKV(t *testing.T) {
 	if err := os.WriteFile(path, []byte("FOO=1\nBAR=2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetKV(path, "HAIRPIN_DNS_TARGET", "192.168.1.137"); err != nil {
+	if err := SetKV(path, "EDGE_VERSION", "v0.0.18"); err != nil {
 		t.Fatal(err)
 	}
-	v, ok, err := GetKV(path, "HAIRPIN_DNS_TARGET")
-	if err != nil || !ok || v != "192.168.1.137" {
+	v, ok, err := GetKV(path, "EDGE_VERSION")
+	if err != nil || !ok || v != "v0.0.18" {
 		t.Fatalf("get: %v %v %q", err, ok, v)
 	}
-	if err := SetKV(path, "HAIRPIN_DNS_TARGET", "10.0.0.1"); err != nil {
+	if err := SetKV(path, "EDGE_VERSION", "v0.0.19"); err != nil {
 		t.Fatal(err)
 	}
-	v, _, _ = GetKV(path, "HAIRPIN_DNS_TARGET")
-	if v != "10.0.0.1" {
+	v, _, _ = GetKV(path, "EDGE_VERSION")
+	if v != "v0.0.19" {
 		t.Fatalf("update: %q", v)
 	}
 	b, _ := os.ReadFile(path)
-	if !containsOnce(string(b), "HAIRPIN_DNS_TARGET=") {
+	if !containsOnce(string(b), "EDGE_VERSION=") {
 		t.Fatalf("duplicated key: %s", b)
 	}
-	if err := DeleteKV(path, "HAIRPIN_DNS_TARGET"); err != nil {
+	if err := DeleteKV(path, "EDGE_VERSION"); err != nil {
 		t.Fatal(err)
 	}
-	_, ok, _ = GetKV(path, "HAIRPIN_DNS_TARGET")
+	_, ok, _ = GetKV(path, "EDGE_VERSION")
 	if ok {
 		t.Fatal("expected deleted")
 	}
