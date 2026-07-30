@@ -104,6 +104,18 @@ bash install-webui.sh
 (`/opt/nanopi-edge/port-forwards.json` + nft). Если dest за домашним роутером
 (`192.168.1.x`), задай там же маршрут home_net / home_via.
 
+### 4. Домены NPM из домашней LAN (DNS на NanoPi)
+
+Чтобы из дома открывать те же домены, что с улицы, без Keenetic CLI:
+
+1. На странице **Порты** → «DNS из дома»: LAN IP NPM (`192.168.1.137`).
+   Или в `.env`: `HAIRPIN_DNS_TARGET=192.168.1.137` и
+   `/opt/nanopi-edge/scripts/hairpin-dns-refresh`.
+2. На Keenetic: DHCP → DNS клиентов = **`10.10.10.1`** (NanoPi), не `192.168.1.1`.
+3. dnsmasq пишет `alias=<белый>,<NPM>` — публичные A-записи локально становятся NPM.
+
+Без пункта 2 клиенты продолжат ходить в DNS роутера и получат белый IP.
+
 ## Репозиторий
 
 | Путь                 | Назначение                                           |
@@ -116,9 +128,8 @@ bash install-webui.sh
 | `.github/workflows/` | Сборка `nanopi-webui-linux-arm64.tar.gz` на тег `v*` |
 | `VERSION`            | Текущая версия релиза                                |
 
-Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE)
-в git **не** хранятся. Они появляются только на плате при установке / в UI /
-в `.env` на устройстве.
+Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE,
+`HAIRPIN_DNS_TARGET`) в git **не** хранятся.
 
 ## Управление на хосте
 
@@ -129,6 +140,7 @@ bash install-webui.sh
 /opt/nanopi-edge/scripts/wan-dhcp
 /opt/nanopi-edge/scripts/wan-pppoe <user> <pass> [vlan]
 /opt/nanopi-edge/scripts/wan-status | jq .
+/opt/nanopi-edge/scripts/hairpin-dns-refresh   # если задан HAIRPIN_DNS_TARGET
 
 # обновить edge (scripts/бинарь; config.json не трогает)
 # NANOPI_YES=1 bash install-singbox.sh

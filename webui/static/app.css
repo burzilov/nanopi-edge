@@ -251,6 +251,7 @@ code { background: #eee; padding: 0.1rem 0.35rem; border-radius: 4px; }
 
 .ports-card { margin-top: 1rem; }
 .ports-table-wrap { overflow-x: auto; }
+.ports-hairpin-meta { margin-top: 0.75rem; margin-bottom: 0; }
 .ports-table {
   width: 100%;
   border-collapse: collapse;
