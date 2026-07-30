@@ -44,7 +44,7 @@ func TestRenderNft(t *testing.T) {
 		{ID: "3", Enabled: true, Proto: "both", WanPort: 51820, DestIP: "10.10.10.2", DestPort: 51820},
 	}}
 	out := RenderNft(s, []string{"end0", "ppp0"})
-	if !strings.Contains(out, `iifname { "end0", "ppp0" } tcp dport 443 dnat to 10.10.10.50:443 # npm`) {
+	if !strings.Contains(out, `iifname { "end0", "ppp0" } tcp dport 443 dnat ip to 10.10.10.50:443 # npm`) {
 		t.Fatalf("missing tcp 443 rule:\n%s", out)
 	}
 	if strings.Contains(out, "dport 53") {

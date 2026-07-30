@@ -256,7 +256,7 @@ func RenderNft(s Store, ifaces []string) string {
 		}
 		for _, p := range protos {
 			fmt.Fprintf(&b,
-				"\t\tiifname { %s } %s dport %d dnat to %s:%d%s\n",
+				"\t\tiifname { %s } %s dport %d dnat ip to %s:%d%s\n",
 				ifaceList, p, r.WanPort, r.DestIP, r.DestPort, comment,
 			)
 		}
