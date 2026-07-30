@@ -1,11 +1,9 @@
 {{define "partials/status"}}
 <div class="card">
-  <p><span class="label">sing-box</span> <span class="pill {{if eq .Active "работает"}}ok{{else}}bad{{end}}">{{.Active}}</span></p>
+  <p><span class="label">прокси (sing-box)</span> <span class="pill {{if eq .Active "работает"}}ok{{else}}bad{{end}}">{{.Active}}</span></p>
   <p><span class="label">время работы</span> {{.Uptime}}</p>
-  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
-  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <div class="row">
-    <label class="vless-pick">VLESS
+    <label class="vless-pick">VPN-сервер (VLESS)
       <select name="name"
               hx-post="/proxy"
               hx-trigger="change"
@@ -17,5 +15,8 @@
       </select>
     </label>
   </div>
+  <p class="hint">Смена сервера сохраняется в конфиг и перезапускает sing-box —
+    интернет может кратко моргнуть. Список серверов берётся из конфига.</p>
 </div>
+{{template "oob/toast" .}}
 {{end}}

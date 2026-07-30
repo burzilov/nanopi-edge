@@ -1,4 +1,4 @@
-package npmcfg
+package proxymgr
 
 import (
 	"bufio"
@@ -15,19 +15,19 @@ import (
 )
 
 const (
-	DefaultConfigPath = "/opt/nanopi-edge/npm.json"
-	commentNPM        = "NPM"
+	DefaultConfigPath = "/opt/nanopi-edge/proxy-manager.json"
+	ruleComment       = "nginx-proxy-manager"
 )
 
-// Config — единственная ручная настройка: IP NPM в домашней LAN.
-// Пустой NPMIP = обвязка выключена.
+// Config — единственная ручная настройка: IP Nginx Proxy Manager в домашней LAN.
+// Пустой ProxyIP = обвязка выключена.
 type Config struct {
-	NPMIP    string `json:"npm_ip,omitempty"`
+	ProxyIP  string `json:"proxy_ip,omitempty"`
 	RouterIP string `json:"router_ip,omitempty"` // последний обнаруженный WAN роутера
 }
 
 func ConfigPath() string {
-	if v := os.Getenv("NPM_CONFIG"); v != "" {
+	if v := os.Getenv("PROXY_MANAGER_CONFIG"); v != "" {
 		return v
 	}
 	return DefaultConfigPath
@@ -45,7 +45,7 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return Config{}, err
 	}
-	c.NPMIP = strings.TrimSpace(c.NPMIP)
+	c.ProxyIP = strings.TrimSpace(c.ProxyIP)
 	c.RouterIP = strings.TrimSpace(c.RouterIP)
 	return c, nil
 }
@@ -67,16 +67,17 @@ func save(c Config) error {
 	return os.Rename(tmp, path)
 }
 
-// Status для страницы NPM.
+// Status для страницы Nginx Proxy Manager.
 type Status struct {
-	Enabled     bool
-	NPMIP       string
-	RouterIP    string
-	RouterOK    bool
-	HomeNet     string
-	HairpinOn   bool
-	WhiteIPs    []string
-	Hint        string
+	Enabled   bool
+	ProxyIP   string
+	RouterIP  string
+	RouterOK  bool
+	ForwardIP string // куда DNAT с улицы (WAN роутера)
+	HomeNet   string
+	HairpinOn bool
+	WhiteIPs  []string
+	Hint      string
 }
 
 func GetStatus() (Status, error) {
@@ -85,8 +86,8 @@ func GetStatus() (Status, error) {
 		return Status{}, err
 	}
 	st := Status{
-		NPMIP:    c.NPMIP,
-		Enabled:  c.NPMIP != "",
+		ProxyIP:  c.ProxyIP,
+		Enabled:  c.ProxyIP != "",
 		WhiteIPs: hairpin.WanIPv4s(),
 	}
 	if hs, err := hairpin.GetStatus(); err == nil {
@@ -99,36 +100,39 @@ func GetStatus() (Status, error) {
 	} else if c.RouterIP != "" {
 		st.RouterIP = c.RouterIP
 		st.RouterOK = false
-		st.Hint = "Роутер сейчас не виден в ARP/DHCP; сохранён прошлый адрес"
+		st.Hint = "Роутер сейчас не отвечает в сети NanoPi; показан последний известный адрес. Проверьте кабель LAN NanoPi → WAN роутера."
 	}
-	if c.NPMIP != "" {
-		if netCIDR, err := homeNetCIDR(c.NPMIP); err == nil {
+	if st.Enabled {
+		st.ForwardIP = st.RouterIP
+		if netCIDR, err := homeNetCIDR(c.ProxyIP); err == nil {
 			st.HomeNet = netCIDR
 		}
 	}
 	if st.Enabled && st.RouterIP == "" {
-		st.Hint = "Не удалось найти роутер в 10.10.10.0/24 — проверь кабель LAN NanoPi → WAN роутера"
+		st.Hint = "Не удалось найти домашний роутер в сети 10.10.10.0/24. Проверьте, что кабель идёт с LAN NanoPi на WAN роутера и роутер включён."
 	}
 	if st.Enabled {
 		if st.Hint != "" {
-			st.Hint += ". "
+			st.Hint += " "
 		}
-		st.Hint += "На Keenetic нужно правило МЭ: с сети NanoPi (10.10.10.0/24) на NPM порты 80/443. DNS клиентов = 10.10.10.1."
+		st.Hint += "На роутере (например Keenetic) нужен проброс портов TCP 80 и 443 с WAN на Nginx Proxy Manager. У клиентов в домашней сети в качестве DNS укажите 10.10.10.1 — тогда домены из дома откроются на виртуалку."
 	}
 	return st, nil
 }
 
-// Apply включает обвязку (или Disable при пустом npmIP).
-func Apply(npmIP string) error {
-	npmIP = strings.TrimSpace(npmIP)
-	if npmIP == "" {
+// Apply включает обвязку (или Disable при пустом proxyIP).
+// С улицы DNAT идёт на WAN роутера (его проброс → Nginx Proxy Manager);
+// из дома — DNS alias на Nginx Proxy Manager.
+func Apply(proxyIP string) error {
+	proxyIP = strings.TrimSpace(proxyIP)
+	if proxyIP == "" {
 		return Disable()
 	}
-	ip := net.ParseIP(npmIP)
+	ip := net.ParseIP(proxyIP)
 	if ip == nil || ip.To4() == nil {
-		return fmt.Errorf("нужен IPv4 NPM, напр. 192.168.1.137")
+		return fmt.Errorf("нужен обычный IPv4-адрес Nginx Proxy Manager, например 192.168.1.137")
 	}
-	npmIP = ip.String()
+	proxyIP = ip.String()
 
 	router := DetectRouterIP()
 	if router == "" {
@@ -137,22 +141,21 @@ func Apply(npmIP string) error {
 		}
 	}
 	if router == "" {
-		return fmt.Errorf("не найден IP роутера в сети LAN NanoPi — проверь кабель и что роутер получил адрес от dnsmasq")
+		return fmt.Errorf("не найден домашний роутер в сети NanoPi — проверьте кабель LAN NanoPi → WAN роутера и что роутер включён")
 	}
-	homeNet, err := homeNetCIDR(npmIP)
-	if err != nil {
+	if _, err := homeNetCIDR(proxyIP); err != nil {
 		return err
 	}
 
+	// Dest = WAN роутера: на Keenetic уже есть (или нужен) проброс на Nginx Proxy Manager.
+	// Прямой DNAT на 192.168.1.x ломает внешний доступ без отдельного МЭ под public src.
 	s := portfwd.Store{
-		HomeNet: homeNet,
-		HomeVia: router,
 		Rules: []portfwd.Rule{
 			portfwd.NormalizeRule(portfwd.Rule{
-				Proto: "tcp", WanPort: 80, DestIP: npmIP, DestPort: 80, Comment: commentNPM,
+				Proto: "tcp", WanPort: 80, DestIP: router, DestPort: 80, Comment: ruleComment,
 			}),
 			portfwd.NormalizeRule(portfwd.Rule{
-				Proto: "tcp", WanPort: 443, DestIP: npmIP, DestPort: 443, Comment: commentNPM,
+				Proto: "tcp", WanPort: 443, DestIP: router, DestPort: 443, Comment: ruleComment,
 			}),
 		},
 	}
@@ -161,10 +164,10 @@ func Apply(npmIP string) error {
 	if err := portfwd.Apply(s, true); err != nil {
 		return err
 	}
-	if err := hairpin.Apply(npmIP); err != nil {
+	if err := hairpin.Apply(proxyIP); err != nil {
 		return fmt.Errorf("DNS hairpin: %w", err)
 	}
-	return save(Config{NPMIP: npmIP, RouterIP: router})
+	return save(Config{ProxyIP: proxyIP, RouterIP: router})
 }
 
 // Disable снимает DNAT, маршрут и DNS alias.
@@ -179,8 +182,8 @@ func Disable() error {
 	return nil
 }
 
-func homeNetCIDR(npmIP string) (string, error) {
-	ip := net.ParseIP(npmIP)
+func homeNetCIDR(proxyIP string) (string, error) {
+	ip := net.ParseIP(proxyIP)
 	if ip == nil {
 		return "", fmt.Errorf("не IPv4")
 	}

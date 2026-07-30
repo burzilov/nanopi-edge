@@ -1,0 +1,77 @@
+{{define "proxy_manager"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nginx Proxy Manager — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="proxy-manager-main">
+    {{template "proxy_manager_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "proxy_manager_inner"}}
+<section>
+  <h1>Nginx Proxy Manager</h1>
+  <p class="hint">Здесь настраивается доступ к сайтам через Nginx Proxy Manager
+    (обычно виртуалка в домашней сети, например <code>192.168.1.137</code>).</p>
+  <p class="hint">С интернета запросы на порты 80 и 443 сначала попадают на NanoPi,
+    затем перенаправляются на домашний роутер — на роутере должен быть проброс
+    этих портов на Nginx Proxy Manager. Из дома домены открываются сразу на виртуалку:
+    NanoPi подменяет DNS, чтобы «белый» адрес вёл внутрь сети.</p>
+  <p class="hint">Достаточно указать IP Nginx Proxy Manager — адрес роутера панель
+    находит сама. Чтобы всё выключить, очистите поле и нажмите «Сохранить».</p>
+
+  <div class="card ports-card">
+    <form class="ports-form"
+          hx-post="/proxy-manager"
+          hx-target="#proxy-manager-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">IP-адрес Nginx Proxy Manager в домашней сети
+          <input name="proxy_ip" type="text" value="{{.ProxyIP}}"
+                 placeholder="192.168.1.137" pattern="^$|^[0-9.]+$"
+                 autocomplete="off">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Сохранить</button>
+        </div>
+      </div>
+    </form>
+
+    <dl class="pm-meta">
+      <div>
+        <dt>Обвязка</dt>
+        <dd>{{if .Enabled}}<span class="pill ok">включена</span>{{else}}<span class="pill">выключена</span>{{end}}</dd>
+      </div>
+      <div>
+        <dt>Домашний роутер</dt>
+        <dd>
+          {{if .RouterIP}}<code>{{.RouterIP}}</code>
+            {{if .RouterOK}}<span class="pill ok">на связи</span>{{else}}<span class="pill">не отвечает</span>{{end}}
+          {{else}}—{{end}}
+        </dd>
+      </div>
+      <div>
+        <dt>С интернета</dt>
+        <dd>{{if .ForwardIP}}порты 80 и 443 → <code>{{.ForwardIP}}</code> (WAN роутера){{else}}—{{end}}</dd>
+      </div>
+      <div>
+        <dt>Из домашней сети</dt>
+        <dd>{{if .HairpinOn}}DNS ведёт на <code>{{.ProxyIP}}</code>{{else}}<span class="pill">выкл</span>{{end}}
+          {{if .WhiteIPs}} · белый IP {{range $i, $ip := .WhiteIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{end}}
+        </dd>
+      </div>
+    </dl>
+    {{if .Hint}}<p class="hint ports-hairpin-meta">{{.Hint}}</p>{{end}}
+  </div>
+</section>
+{{template "oob/toast" .}}
+{{end}}

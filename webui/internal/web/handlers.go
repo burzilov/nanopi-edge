@@ -16,7 +16,7 @@ import (
 	"nanopi-webui/internal/config"
 	"nanopi-webui/internal/domains"
 	"nanopi-webui/internal/logfmt"
-	"nanopi-webui/internal/npmcfg"
+	"nanopi-webui/internal/proxymgr"
 	"nanopi-webui/internal/sbconfig"
 	"nanopi-webui/internal/sysd"
 	"nanopi-webui/internal/update"
@@ -54,12 +54,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /logs/stream", s.handleLogsStream)
 	mux.HandleFunc("GET /domains", s.handleDomainsPage)
 	mux.HandleFunc("POST /domains/save-restart", s.handleDomainsSaveRestart)
-	mux.HandleFunc("GET /npm", s.handleNPMPage)
-	mux.HandleFunc("POST /npm", s.handleNPMSave)
-	mux.HandleFunc("GET /api/npm", s.handleAPINPMGet)
-	mux.HandleFunc("GET /ports", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/npm", http.StatusFound)
-	})
+	mux.HandleFunc("GET /proxy-manager", s.handleProxyManagerPage)
+	mux.HandleFunc("POST /proxy-manager", s.handleProxyManagerSave)
+	mux.HandleFunc("GET /api/proxy-manager", s.handleAPIProxyManagerGet)
 	mux.HandleFunc("GET /config", s.handleConfigPage)
 	mux.HandleFunc("POST /config/check", s.handleConfigCheck)
 	mux.HandleFunc("POST /config/save-restart", s.handleConfigSaveRestart)
@@ -149,7 +146,7 @@ func (s *Server) handleProxySet(w http.ResponseWriter, r *http.Request) {
 	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
 	_ = s.Clash.WaitReady(20, 500*time.Millisecond)
 	d = s.status()
-	d.Message = "VLESS: " + name + " — config сохранён, sing-box перезапущен"
+	d.Message = "Выбран VPN-сервер «" + name + "». Настройки сохранены, sing-box перезапущен"
 	s.render(w, "partials/status", d)
 }
 
@@ -162,7 +159,7 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
 	_ = s.Clash.WaitReady(20, 500*time.Millisecond)
-	d.Message = "sing-box перезапущен (TUN мог кратко оборваться)"
+	d.Message = "sing-box перезапущен. Интернет мог кратко пропасть — это нормально"
 	s.render(w, "partials/flash", d)
 }
 
@@ -308,19 +305,19 @@ func (s *Server) handleDomainsSaveRestart(w http.ResponseWriter, r *http.Request
 		return
 	}
 	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
-	data["Message"] = "Домены применены в config.json, sing-box перезапущен"
+	data["Message"] = "Список доменов сохранён, sing-box перезапущен"
 	s.render(w, "domains_inner", data)
 }
 
-type npmPageData struct {
-	npmcfg.Status
+type proxyManagerPageData struct {
+	proxymgr.Status
 	Message string
 	Error   string
 }
 
-func (s *Server) npmData(msg, errMsg string) npmPageData {
-	d := npmPageData{Message: msg, Error: errMsg}
-	st, err := npmcfg.GetStatus()
+func (s *Server) proxyManagerData(msg, errMsg string) proxyManagerPageData {
+	d := proxyManagerPageData{Message: msg, Error: errMsg}
+	st, err := proxymgr.GetStatus()
 	if err != nil {
 		if d.Error == "" {
 			d.Error = err.Error()
@@ -331,29 +328,29 @@ func (s *Server) npmData(msg, errMsg string) npmPageData {
 	return d
 }
 
-func (s *Server) handleNPMPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "npm", s.npmData("", ""))
+func (s *Server) handleProxyManagerPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "proxy_manager", s.proxyManagerData("", ""))
 }
 
-func (s *Server) handleNPMSave(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleProxyManagerSave(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	npmIP := strings.TrimSpace(r.FormValue("npm_ip"))
-	if err := npmcfg.Apply(npmIP); err != nil {
-		s.render(w, "npm_inner", s.npmData("", err.Error()))
+	proxyIP := strings.TrimSpace(r.FormValue("proxy_ip"))
+	if err := proxymgr.Apply(proxyIP); err != nil {
+		s.render(w, "proxy_manager_inner", s.proxyManagerData("", err.Error()))
 		return
 	}
-	msg := "NPM выключен: проброс, маршрут и DNS alias сняты"
-	if npmIP != "" {
-		msg = "NPM включён: 80/443 → " + npmIP + ", DNS alias и маршрут настроены"
+	msg := "Обвязка выключена: проброс с интернета и DNS из дома сняты"
+	if proxyIP != "" {
+		msg = "Готово: с интернета порты 80/443 идут на WAN роутера, из дома DNS ведёт на " + proxyIP
 	}
-	s.render(w, "npm_inner", s.npmData(msg, ""))
+	s.render(w, "proxy_manager_inner", s.proxyManagerData(msg, ""))
 }
 
-func (s *Server) handleAPINPMGet(w http.ResponseWriter, r *http.Request) {
-	st, err := npmcfg.GetStatus()
+func (s *Server) handleAPIProxyManagerGet(w http.ResponseWriter, r *http.Request) {
+	st, err := proxymgr.GetStatus()
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -393,7 +390,7 @@ func (s *Server) handleConfigCheck(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		data["Error"] = "check failed: " + err.Error()
 	} else {
-		data["Message"] = "check OK"
+		data["Message"] = "Проверка прошла успешно — конфиг можно сохранять"
 	}
 	s.render(w, "config_inner", data)
 }
@@ -444,7 +441,7 @@ func (s *Server) handleConfigSaveRestart(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
-	data["Message"] = "Конфиг сохранён, sing-box перезапущен"
+	data["Message"] = "Конфиг сохранён, sing-box перезапущен. Интернет мог кратко моргнуть"
 	s.render(w, "config_inner", data)
 }
 
@@ -525,9 +522,9 @@ func (s *Server) handleWanForm(w http.ResponseWriter, r *http.Request) {
 	d = s.status()
 	switch strings.ToLower(req.Mode) {
 	case "pppoe":
-		d.Message = "WAN: PPPoE применён (жди UP ppp0)"
+		d.Message = "PPPoE включён — подождите, пока появится сессия у провайдера"
 	default:
-		d.Message = "WAN: откат на DHCP"
+		d.Message = "Режим DHCP: IP снова выдаёт провайдер автоматически"
 	}
 	s.render(w, "partials/wan", d)
 }

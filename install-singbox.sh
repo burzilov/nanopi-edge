@@ -236,7 +236,8 @@ nanopi_load_env() {
 
 
 
-# Локальный DNS hairpin: A-записи с белым IP WAN → HAIRPIN_DNS_TARGET (напр. NPM в LAN роутера).
+# Локальный DNS hairpin: A-записи с белым IP WAN → HAIRPIN_DNS_TARGET
+# (напр. Nginx Proxy Manager в LAN роутера).
 # В публичном скрипте IP нет — только опциональный ключ в /opt/nanopi-edge/.env.
 # Клиентам дома: DHCP DNS = 10.10.10.1 (NanoPi).
 nanopi_write_hairpin_dns_alias() {
@@ -1102,7 +1103,7 @@ LAN_IF=${LAN_IF}
 WAN_MODE=${wan_mode}
 PPPOE_USER=${pppoe_user}
 PPPOE_VLAN=${pppoe_vlan}
-# Опционально (не коммитить значение): LAN IP NPM → dnsmasq alias белый→этот IP
+# Опционально (не коммитить значение): LAN IP Nginx Proxy Manager → dnsmasq alias белый→этот IP
 # HAIRPIN_DNS_TARGET=192.168.x.x
 # /opt/nanopi-edge/scripts/hairpin-dns-refresh ; DNS клиентов роутера = 10.10.10.1
 EOF
@@ -1240,8 +1241,8 @@ prompt_hairpin_dns() {
   fi
 
   explain \
-    "Опционально: hairpin DNS для доменов NPM из домашней LAN.
-Укажи LAN IP NPM (или хоста за роутером). dnsmasq подменит A-записи
+    "Опционально: hairpin DNS для доменов Nginx Proxy Manager из домашней LAN.
+Укажи LAN IP Nginx Proxy Manager (или хоста за роутером). dnsmasq подменит A-записи
 с белым IP WAN на этот адрес. Пусто / Enter без значения = не использовать.
 Потом на роутере: DNS клиентов = 10.10.10.1. Значение только в ${OPT_ENV}, не в git.
 При upgrade: Enter = оставить текущее; «-» = выключить." \
@@ -1253,7 +1254,7 @@ prompt_hairpin_dns() {
   fi
 
   local val
-  val=$(ask "LAN IP для hairpin DNS (NPM)" "$def")
+  val=$(ask "LAN IP для hairpin DNS (Nginx Proxy Manager)" "$def")
   val=${val//[[:space:]]/}
   if [[ "$val" == "-" || "$val" == "none" || "$val" == "off" ]]; then
     val=""
@@ -1694,7 +1695,7 @@ print_cutover() {
 
 1) Клиенты роутера — убрать «старый» gateway/DNS
    • Gateway = сам роутер (обычно 192.168.1.1), НЕ старый прокси/VM.
-   • DNS клиентов = 10.10.10.1 (NanoPi) для hairpin доменов NPM
+   • DNS клиентов = 10.10.10.1 (NanoPi) для hairpin доменов Nginx Proxy Manager
      (HAIRPIN_DNS_TARGET); иначе DNS = роутер.
 
 2) Роутерный профиль на NanoPi (lab-кабель ещё можно не трогать)

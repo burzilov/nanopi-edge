@@ -1,43 +1,43 @@
 {{define "partials/wan"}}
 <div class="card wan-card">
-  <h2 class="card-title">WAN к ISP</h2>
+  <h2 class="card-title">Интернет у провайдера (WAN)</h2>
+  <p class="hint">Как NanoPi получает интернет от ISP: по обычному кабелю (DHCP)
+    или по логину/паролю провайдера (PPPoE). Домашний роутер подключается к NanoPi
+    с другой стороны (LAN) и раздаёт сеть клиентам.</p>
   {{if .WANErr}}<p class="err">{{.WANErr}}</p>{{end}}
-  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
-  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <p>
     <span class="label">режим</span>
     <span class="pill {{if eq .WAN.Mode "pppoe"}}warn{{else}}ok{{end}}">{{if .WAN.Mode}}{{.WAN.Mode}}{{else}}—{{end}}</span>
     {{if eq .WAN.Mode "pppoe"}}
-      <span class="label">ppp0</span>
-      <span class="pill {{if .WAN.PPP0Up}}ok{{else}}bad{{end}}">{{if .WAN.PPP0Up}}up {{.WAN.PPP0IP}}{{else}}down{{end}}</span>
+      <span class="label">сессия PPPoE</span>
+      <span class="pill {{if .WAN.PPP0Up}}ok{{else}}bad{{end}}">{{if .WAN.PPP0Up}}работает {{.WAN.PPP0IP}}{{else}}нет связи{{end}}</span>
     {{else}}
-      <span class="label">WAN IP</span> <code>{{if .WAN.WanIP}}{{.WAN.WanIP}}{{else}}—{{end}}</code>
+      <span class="label">IP у провайдера</span> <code>{{if .WAN.WanIP}}{{.WAN.WanIP}}{{else}}—{{end}}</code>
     {{end}}
   </p>
   <p>
-    <span class="label">LAN</span>
+    <span class="label">к домашнему роутеру</span>
     <span class="pill {{if eq .WAN.Dnsmasq "active"}}ok{{else}}bad{{end}}">DHCP {{.WAN.LanDHCPLeases}}</span>
     <span class="pill {{if .WAN.LanPPPoEUp}}ok{{else}}muted{{end}}">PPPoE {{if .WAN.LanPPPoEUp}}up{{else}}—{{end}}</span>
-    <span class="hint">dual-serve · {{if .WAN.LanIP}}{{.WAN.LanIP}}{{else}}10.10.10.1{{end}}</span>
+    <span class="hint">адрес NanoPi: {{if .WAN.LanIP}}{{.WAN.LanIP}}{{else}}10.10.10.1{{end}}</span>
   </p>
   {{if .WAN.LastError}}<p class="err wan-last-err">{{.WAN.LastError}}</p>{{end}}
 
   <form class="wan-form"
         hx-post="/wan"
         hx-target="#wan"
-        hx-swap="innerHTML"
-        onsubmit="return window.nanopiConfirmWan(this)">
+        hx-swap="innerHTML">
     <div class="row">
-      <label>Режим
+      <label>Режим подключения
         <select name="mode" id="wan-mode" onchange="window.nanopiToggleWanFields(this)">
-          <option value="dhcp" {{if ne .WAN.Mode "pppoe"}}selected{{end}}>DHCP</option>
-          <option value="pppoe" {{if eq .WAN.Mode "pppoe"}}selected{{end}}>PPPoE</option>
+          <option value="dhcp" {{if ne .WAN.Mode "pppoe"}}selected{{end}}>DHCP — IP выдаёт провайдер</option>
+          <option value="pppoe" {{if eq .WAN.Mode "pppoe"}}selected{{end}}>PPPoE — логин и пароль ISP</option>
         </select>
       </label>
     </div>
     <div id="wan-pppoe-fields" class="wan-pppoe-fields" {{if ne .WAN.Mode "pppoe"}}hidden{{end}}>
       <div class="row">
-        <label class="grow">Логин
+        <label class="grow">Логин провайдера
           <input type="text" name="user" value="{{.WAN.User}}" autocomplete="username">
         </label>
         <label class="grow">Пароль
@@ -50,7 +50,11 @@
           <input type="number" name="vlan" min="1" max="4094" placeholder="нет" value="{{.WAN.VLAN}}">
         </label>
       </div>
-      <p class="hint">Пустой пароль при «Применить» сохранится пустым. VLAN — только если требует провайдер.</p>
+      <p class="hint">Логин и пароль — те же, что для входа в интернет у провайдера.
+        Пустой пароль при «Применить» сохранится пустым. VLAN заполняйте только если
+        провайдер явно требует номер VLAN (часто у GPON/оптики); иначе оставьте пустым.</p>
+      <p class="hint">После перехода на PPPoE интернет может пропасть на минуту,
+        пока сессия не поднимется. «Откат на DHCP» возвращает обычное получение IP без логина.</p>
     </div>
     <div class="row wan-actions">
       <button type="submit">Применить</button>
@@ -58,9 +62,9 @@
               hx-post="/wan"
               hx-vals='{"mode":"dhcp"}'
               hx-target="#wan"
-              hx-swap="innerHTML"
-              hx-confirm="Откатить WAN на DHCP?">Откат на DHCP</button>
+              hx-swap="innerHTML">Откат на DHCP</button>
     </div>
   </form>
 </div>
+{{template "oob/toast" .}}
 {{end}}

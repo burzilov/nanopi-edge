@@ -5,13 +5,13 @@
         hx-target="#toast-host"
         hx-swap="innerHTML"
         hx-on::after-request="var s=document.getElementById('status'); if(s) htmx.trigger(s,'load')">
-    <button type="submit" class="danger">Перезапустить sing-box</button>
+    <button type="submit" class="danger" title="Кратко оборвёт TUN — интернет моргнёт">Перезапустить sing-box</button>
   </form>
   <nav>
     <a href="/">Статус</a>
     <a href="/logs">Логи</a>
     <a href="/domains">Домены</a>
-    <a href="/npm">NPM</a>
+    <a href="/proxy-manager">Nginx Proxy Manager</a>
     <a href="/config">Конфиг</a>
   </nav>
   <div class="hdr-version">
@@ -23,12 +23,15 @@
 <dialog id="updates-dialog" class="updates-dialog">
   <form method="dialog" class="updates-form">
     <h2>Обновления</h2>
+    <p class="hint updates-intro">Проверка новых версий edge и этой панели на GitHub.
+      Обновление ставится по очереди: сначала система на NanoPi, затем WebUI.
+      На время установки интернет и панель могут быть недоступны.</p>
     <p id="updates-status" class="hint">—</p>
     <p id="updates-detail" class="hint" hidden></p>
     <pre id="updates-notes" class="updates-notes" hidden></pre>
     <div class="updates-actions">
       <button type="submit" class="secondary" value="cancel">Закрыть</button>
-      <button type="button" id="btn-apply-update" class="danger" hidden>Обновить</button>
+      <button type="button" id="btn-apply-update" class="danger" hidden>Установить обновление</button>
     </div>
   </form>
 </dialog>
@@ -36,7 +39,9 @@
   <div class="update-overlay-card">
     <p id="update-overlay-title">Устанавливаю обновление…</p>
     <p id="update-overlay-step" class="hint">Запуск…</p>
-    <p class="hint">Страница обновится, когда панель ответит новой версией.</p>
+    <p class="hint">Не закрывайте вкладку. Страница обновится сама, когда панель
+      снова ответит с новой версией. Если долго нет ответа — нажмите кнопку ниже
+      или F5.</p>
     <p class="hint">
       <button type="button" id="update-overlay-dismiss" class="secondary">
         Обновить страницу (F5)
@@ -58,6 +63,15 @@
 <div class="toast toast-err" role="alert">
   <div class="toast-title">Ошибка</div>
   <div class="toast-body">{{.Error}}</div>
+</div>
+{{end}}
+{{end}}
+
+{{/* OOB: вставить в ответ HTMX рядом с основным swap — тост как у рестарта sing-box */}}
+{{define "oob/toast"}}
+{{if or .Message .Error}}
+<div id="toast-host" hx-swap-oob="innerHTML">
+{{template "partials/flash" .}}
 </div>
 {{end}}
 {{end}}

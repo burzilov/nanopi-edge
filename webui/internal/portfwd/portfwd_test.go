@@ -39,12 +39,12 @@ func TestValidateStoreDup(t *testing.T) {
 
 func TestRenderNft(t *testing.T) {
 	s := Store{Rules: []Rule{
-		{ID: "1", Enabled: true, Proto: "tcp", WanPort: 443, DestIP: "10.10.10.50", DestPort: 443, Comment: "npm"},
+		{ID: "1", Enabled: true, Proto: "tcp", WanPort: 443, DestIP: "10.10.10.50", DestPort: 443, Comment: "nginx-proxy-manager"},
 		{ID: "2", Enabled: false, Proto: "udp", WanPort: 53, DestIP: "10.10.10.53", DestPort: 53},
 		{ID: "3", Enabled: true, Proto: "both", WanPort: 51820, DestIP: "10.10.10.2", DestPort: 51820},
 	}}
 	out := RenderNft(s, []string{"end0", "ppp0"}, "enp1s0")
-	if !strings.Contains(out, `iifname { "end0", "ppp0" } tcp dport 443 dnat ip to 10.10.10.50:443 # npm`) {
+	if !strings.Contains(out, `iifname { "end0", "ppp0" } tcp dport 443 dnat ip to 10.10.10.50:443 # nginx-proxy-manager`) {
 		t.Fatalf("missing tcp 443 rule:\n%s", out)
 	}
 	if strings.Contains(out, "dport 53") {

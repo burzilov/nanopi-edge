@@ -20,8 +20,12 @@
 {{define "config_inner"}}
 <section>
   <h1>Конфиг sing-box</h1>
-  {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
-  {{if .Error}}<pre class="err">{{.Error}}</pre>{{end}}
+  <p class="hint">Полный файл настроек sing-box в формате JSON. Обычно достаточно
+    страниц «Домены» и «Статус» — правьте этот файл только если понимаете структуру
+    или копируете готовый конфиг. Ошибка в JSON может оставить прокси нерабочим.</p>
+  <p class="hint">Сначала нажмите «Проверить без сохранения»: панель прогонит
+    <code>sing-box check</code> и покажет ошибки, не записывая файл. «Сохранить и
+    перезапустить» запишет конфиг и перезапустит сервис — связь может кратко пропасть.</p>
   {{if .CheckOut}}<pre class="logs">{{.CheckOut}}</pre>{{end}}
   <form>
     <textarea name="config" rows="28" class="wide mono">{{.Config}}</textarea>
@@ -31,9 +35,9 @@
               hx-include="closest form">Проверить без сохранения</button>
       <button type="button" class="danger"
               hx-post="/config/save-restart" hx-target="#config-main" hx-swap="innerHTML"
-              hx-include="closest form"
-              hx-confirm="Сохранить конфиг и перезапустить sing-box?">Сохранить и перезапустить</button>
+              hx-include="closest form">Сохранить и перезапустить</button>
     </div>
   </form>
 </section>
+{{template "oob/toast" .}}
 {{end}}
