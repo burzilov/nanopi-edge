@@ -1,0 +1,97 @@
+#!/bin/bash
+# Статус WAN/LAN в JSON (для WebUI и CLI).
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+mode=${WAN_MODE:-dhcp}
+user=${PPPOE_USER:-}
+vlan=${PPPOE_VLAN:-}
+pass=$(nanopi_read_ppp_password)
+
+ppp0_up=false
+ppp0_ip=""
+if ip link show ppp0 &>/dev/null; then
+  ppp0_up=true
+  ppp0_ip=$(ip -4 -o addr show ppp0 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
+fi
+
+wan_ip=$(ip -4 -o addr show "$WAN_IF" 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
+lan_ip=$(ip -4 -o addr show "$LAN_IF" 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
+
+# LAN DHCP leases (активные)
+dhcp_leases=0
+lease_file=""
+for f in /var/lib/misc/dnsmasq.leases /var/lib/dnsmasq/dnsmasq.leases; do
+  if [[ -f "$f" ]]; then lease_file=$f; break; fi
+done
+if [[ -n "$lease_file" ]]; then
+  dhcp_leases=$(awk 'NF>=4 {c++} END{print c+0}' "$lease_file")
+fi
+
+# LAN PPPoE session (обычно ppp1)
+lan_pppoe_up=false
+lan_pppoe_if=""
+while read -r ifname; do
+  [[ "$ifname" == ppp0 ]] && continue
+  [[ "$ifname" =~ ^ppp[0-9]+$ ]] || continue
+  lan_pppoe_up=true
+  lan_pppoe_if=$ifname
+  break
+done < <(ip -br link 2>/dev/null | awk '{print $1}' | tr -d '@:*' || true)
+
+dnsmasq_active=$(systemctl is-active dnsmasq 2>/dev/null || echo inactive)
+pppoe_srv_active=$(systemctl is-active nanopi-pppoe-server.service 2>/dev/null || echo inactive)
+wan_pppoe_active=$(systemctl is-active nanopi-wan-pppoe.service 2>/dev/null || echo inactive)
+
+last_err=""
+if [[ "$mode" == pppoe ]]; then
+  last_err=$(journalctl -u nanopi-wan-pppoe.service -n 30 --no-pager -o cat 2>/dev/null \
+    | grep -iE 'failed|error|timeout|CHAP|PAP|Connection terminated|Modem hangup' \
+    | tail -3 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  jq -n \
+    --arg mode "$mode" \
+    --arg user "$user" \
+    --arg password "$pass" \
+    --arg vlan "$vlan" \
+    --arg wan_if "$WAN_IF" \
+    --arg lan_if "$LAN_IF" \
+    --arg wan_ip "$wan_ip" \
+    --arg lan_ip "$lan_ip" \
+    --arg ppp0_ip "$ppp0_ip" \
+    --argjson ppp0_up "$ppp0_up" \
+    --argjson lan_pppoe_up "$lan_pppoe_up" \
+    --arg lan_pppoe_if "$lan_pppoe_if" \
+    --argjson dhcp_leases "$dhcp_leases" \
+    --arg dnsmasq "$dnsmasq_active" \
+    --arg pppoe_server "$pppoe_srv_active" \
+    --arg wan_pppoe "$wan_pppoe_active" \
+    --arg last_error "$last_err" \
+    '{
+      mode: $mode,
+      user: $user,
+      password: $password,
+      vlan: $vlan,
+      wan_if: $wan_if,
+      lan_if: $lan_if,
+      wan_ip: $wan_ip,
+      lan_ip: $lan_ip,
+      ppp0_up: $ppp0_up,
+      ppp0_ip: $ppp0_ip,
+      lan_dhcp_leases: $dhcp_leases,
+      lan_pppoe_up: $lan_pppoe_up,
+      lan_pppoe_if: $lan_pppoe_if,
+      dnsmasq: $dnsmasq,
+      pppoe_server: $pppoe_server,
+      wan_pppoe_unit: $wan_pppoe,
+      last_error: $last_error
+    }'
+else
+  echo "{\"mode\":\"$mode\",\"error\":\"jq required\"}"
+  exit 1
+fi

@@ -1,0 +1,49 @@
+#!/bin/bash
+# Метаданные мобильного VLESS inbound (без UUID/ключей/URI).
+set -euo pipefail
+# shellcheck disable=SC1091
+source /opt/nanopi-edge/scripts/common.sh
+nanopi_load_env
+
+STATE="${MOBILE_VLESS_STATE:-/etc/sing-box/inbound-vless-reality.json}"
+CFG="${SINGBOX_CONFIG:-/etc/sing-box/config.json}"
+
+enabled=false
+port=0
+configured=false
+inbound_present=false
+listen_ok=false
+
+if [[ -f "$STATE" ]]; then
+  enabled=$(jq -r '.enabled // false' "$STATE" 2>/dev/null || echo false)
+  port=$(jq -r '.port // 8443' "$STATE" 2>/dev/null || echo 0)
+  if jq -e '(.uuid // "") != "" and (.private_key // "") != ""' "$STATE" >/dev/null 2>&1; then
+    configured=true
+  fi
+fi
+
+if [[ -f "$CFG" ]] && jq -e '.inbounds[]? | select(.tag=="vless-mobile")' "$CFG" >/dev/null 2>&1; then
+  inbound_present=true
+fi
+
+if [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -gt 0 ]]; then
+  if ss -ltn 2>/dev/null | grep -qE ":${port}\\b"; then
+    listen_ok=true
+  fi
+fi
+
+jq -n \
+  --argjson enabled "$enabled" \
+  --argjson port "${port:-0}" \
+  --argjson configured "$configured" \
+  --argjson inbound_present "$inbound_present" \
+  --argjson listen_ok "$listen_ok" \
+  --arg singbox "$(systemctl is-active sing-box 2>/dev/null || echo unknown)" \
+  '{
+    enabled: $enabled,
+    port: $port,
+    configured: $configured,
+    inbound_present: $inbound_present,
+    listen_ok: $listen_ok,
+    singbox: $singbox
+  }'

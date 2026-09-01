@@ -9,13 +9,13 @@
 # Повторный запуск не гасит router-режим (dnsmasq/nftables) и по умолчанию
 # не пересобирает /etc/sing-box/config.json.
 #
-# Повседневное управление — /opt/nanopi-edge/scripts/:
+# Повседневное управление — /opt/nanopi-edge/scripts/ (из release bundle):
 #   router-on | lab-on | wan-dhcp | wan-pppoe | wan-status | proxy-select | hairpin-dns-refresh
 #   inbound-status   # метаданные мобильного VLESS (без секретов)
 #
 set -euo pipefail
 
-SINGBOX_VERSION="${SINGBOX_VERSION:-1.13.14}"
+SINGBOX_VERSION="${SINGBOX_VERSION:-1.14.0}"
 SINGBOX_BIN=/usr/local/bin/sing-box
 OPT_ROOT=/opt/nanopi-edge
 SCRIPTS_DIR="$OPT_ROOT/scripts"
@@ -26,6 +26,10 @@ MOBILE_VLESS_STATE="$SB_DIR/inbound-vless-reality.json"
 UNIT_DST=/etc/systemd/system/sing-box.service
 NETPLAN_DIR=/etc/netplan
 SELF_INSTALL="$OPT_ROOT/install-singbox.sh"
+
+EDGE_GITHUB_REPO="${WEBUI_GITHUB_REPO:-${EDGE_GITHUB_REPO:-burzilov/nanopi-edge}}"
+SCRIPTS_ASSET=nanopi-edge-scripts.tar.gz
+_SCRIPTS_INSTALL_TMP=
 
 WAN_IF=end0
 LAN_IF=enp1s0
@@ -200,844 +204,127 @@ cmd_status() {
   ls -la "$SCRIPTS_DIR" 2>/dev/null || true
 }
 
-# --- постоянные скрипты в /opt/nanopi-edge/scripts ---
+# --- scripts bundle с GitHub Release ---
 
-write_ops_scripts() {
-  explain \
-    "Запишу постоянные утилиты в ${SCRIPTS_DIR}/
-(router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, hairpin-dns-refresh,
-inbound-status, common.sh).
-Они читают ${OPT_ENV} и не зависят от install.sh — его потом можно удалить." \
-    "Скрипты executable на месте"
-
-  mkdir -p "$SCRIPTS_DIR"
-
-  cat > "$SCRIPTS_DIR/common.sh" <<'EOF'
-#!/bin/bash
-# Общие хелперы для /opt/nanopi-edge/scripts/* (source, не запускать).
-# shellcheck shell=bash
-
-ENV_FILE="${ENV_FILE:-/opt/nanopi-edge/.env}"
-NETPLAN_DIR="${NETPLAN_DIR:-/etc/netplan}"
-PPP_PEER="${PPP_PEER:-/etc/ppp/peers/nanopi-wan}"
-PPP_SECRET_FILE="${PPP_SECRET_FILE:-/etc/ppp/nanopi-wan.secret}"
-PPP_SERVER_OPTS="${PPP_SERVER_OPTS:-/etc/ppp/pppoe-server-options}"
-PPPOE_SERVER_UNIT="${PPPOE_SERVER_UNIT:-nanopi-pppoe-server.service}"
-WAN_PPPOE_UNIT="${WAN_PPPOE_UNIT:-nanopi-wan-pppoe.service}"
-
-nanopi_load_env() {
-  [[ -f "$ENV_FILE" ]] || { echo "ERROR: нет $ENV_FILE" >&2; exit 1; }
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  WAN_IF=${WAN_IF:-end0}
-  LAN_IF=${LAN_IF:-enp1s0}
-  WAN_MODE=${WAN_MODE:-dhcp}
-  PPPOE_USER=${PPPOE_USER:-}
-  PPPOE_VLAN=${PPPOE_VLAN:-}
-  HAIRPIN_DNS_TARGET=${HAIRPIN_DNS_TARGET:-}
+edge_api_get() {
+  local url="$1"
+  curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -H "User-Agent: nanopi-edge-installer" \
+    "$url"
 }
 
-
-
-# Локальный DNS hairpin: A-записи с белым IP WAN → HAIRPIN_DNS_TARGET
-# (напр. Nginx Proxy Manager в LAN роутера).
-# В публичном скрипте IP нет — только опциональный ключ в /opt/nanopi-edge/.env.
-# Клиентам дома: DHCP DNS = 10.10.10.1 (NanoPi).
-nanopi_write_hairpin_dns_alias() {
-  local conf=/etc/dnsmasq.d/hairpin-alias.conf
-  local target="${HAIRPIN_DNS_TARGET:-}"
-  mkdir -p /etc/dnsmasq.d
-  if [[ -z "$target" ]]; then
-    rm -f "$conf"
+edge_resolve_github_repo() {
+  if [[ -n "${WEBUI_GITHUB_REPO:-}" ]]; then
+    echo "$WEBUI_GITHUB_REPO"
     return 0
   fi
-  if ! [[ "$target" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    echo "WARN: HAIRPIN_DNS_TARGET='$target' не IPv4 — alias не пишу" >&2
-    return 0
-  fi
-  local -a wan_ips=()
-  local ifc ip
-  for ifc in "${WAN_IF:-end0}" ppp0; do
-    ip link show "$ifc" &>/dev/null || continue
-    while read -r ip; do
-      [[ -n "$ip" && "$ip" != "$target" ]] || continue
-      wan_ips+=("$ip")
-    done < <(ip -4 -o addr show dev "$ifc" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
-  done
-  if [[ ${#wan_ips[@]} -eq 0 ]]; then
-    printf '%s\n' \
-      "# Managed by nanopi-edge — HAIRPIN_DNS_TARGET=${target}" \
-      "# WAN IPv4 пока нет; перезапишется после wan-dhcp/wan-pppoe / hairpin-dns-refresh" \
-      >"$conf"
-    return 0
-  fi
-  {
-    echo "# Managed by nanopi-edge — hairpin DNS (do not edit)"
-    echo "# HAIRPIN_DNS_TARGET=${target}  (из ${ENV_FILE})"
-    local seen=""
-    for ip in "${wan_ips[@]}"; do
-      [[ " $seen " == *" $ip "* ]] && continue
-      seen+=" $ip"
-      echo "alias=${ip},${target}"
-    done
-  } >"$conf"
-}
-
-
-nanopi_set_env_kv() {
-  local key="$1" val="$2"
-  local tmp
-  tmp=$(mktemp)
-  if [[ -f "$ENV_FILE" ]]; then
-    grep -v "^${key}=" "$ENV_FILE" >"$tmp" || true
-  else
-    : >"$tmp"
-  fi
-  # экранируем только перевод строки
-  val=${val//$'\n'/}
-  printf '%s=%s\n' "$key" "$val" >>"$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$ENV_FILE"
-}
-
-nanopi_write_nft() {
-  local wan="$1"
-  mkdir -p /etc/nftables.d
-  if [[ ! -f /etc/nftables.d/nanopi-port-forwards.nft ]]; then
-    cat > /etc/nftables.d/nanopi-port-forwards.nft <<'FWD'
-# Managed by nanopi-webui — port forwards (do not edit)
-table inet nanopi_portforward {
-	chain prerouting {
-		type nat hook prerouting priority dstnat; policy accept;
-	}
-}
-FWD
-  fi
-  cat > /etc/nftables.conf <<NFT
-#!/usr/sbin/nft -f
-# Минимальный NAT на краю + MSS clamp для PPPoE
-flush ruleset
-
-table inet nat {
-	chain postrouting {
-		type nat hook postrouting priority srcnat; policy accept;
-		oifname "${wan}" masquerade
-		oifname "ppp0" masquerade
-	}
-}
-
-table inet filter {
-	chain forward {
-		type filter hook forward priority filter; policy accept;
-		tcp flags syn tcp option maxseg size set 1452
-	}
-}
-
-include "/etc/nftables.d/nanopi-port-forwards.nft"
-NFT
-}
-
-nanopi_write_dnsmasq_lan() {
-  local lan="$1" wan="$2"
-  mkdir -p /etc/dnsmasq.d
-  cat > /etc/dnsmasq.d/lan.conf <<DNS
-# DHCP только на LAN NanoPi → WAN домашнего роутера
-interface=${lan}
-bind-dynamic
-except-interface=lo
-except-interface=${wan}
-except-interface=sb-tun
-except-interface=ppp0
-except-interface=ppp1
-
-domain-needed
-bogus-priv
-dhcp-authoritative
-
-dhcp-range=10.10.10.100,10.10.10.200,12h
-dhcp-option=option:router,10.10.10.1
-dhcp-option=option:dns-server,10.10.10.1
-
-no-resolv
-server=94.140.14.14
-server=94.140.15.15
-DNS
-  rm -f /etc/dnsmasq.d/README
-}
-
-nanopi_write_lan_netplan() {
-  local lan="$1"
-  cat > "$NETPLAN_DIR/50-router-lan.yaml" <<YAML
-# NanoPi router: LAN (${lan}) = 10.10.10.1/24
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${lan}:
-      dhcp4: false
-      dhcp6: false
-      optional: true
-      ignore-carrier: true
-      addresses:
-        - 10.10.10.1/24
-YAML
-  chmod 600 "$NETPLAN_DIR/50-router-lan.yaml"
-}
-
-nanopi_write_pppoe_server_opts() {
-  cat > "$PPP_SERVER_OPTS" <<'OPTS'
-# NanoPi LAN PPPoE server — accept-any (в т.ч. пустые креды)
-noauth
-nologin
-ms-dns 10.10.10.1
-netmask 255.255.255.0
-default-asyncmap
-mtu 1492
-mru 1492
-lcp-echo-interval 30
-lcp-echo-failure 4
-noipdefault
-nodefaultroute
-noproxyarp
-OPTS
-  chmod 644 "$PPP_SERVER_OPTS"
-}
-
-# Accept-any для LAN-server + опциональная строка WAN-клиента (user/pass).
-nanopi_write_ppp_auth_secrets() {
-  local user="${1:-}" pass="${2:-}"
-  umask 077
-  cat > /etc/ppp/pap-secrets <<PAP
-# NanoPi: LAN PPPoE-server accept-any + optional WAN client
-*               *       ""                      *
-*               *       *                       *
-PAP
-  cat > /etc/ppp/chap-secrets <<CHAP
-# NanoPi: LAN PPPoE-server accept-any + optional WAN client
-*               *       ""                      *
-*               *       *                       *
-CHAP
-  if [[ -n "$user" || -n "$pass" ]]; then
-    printf '"%s"\t*\t"%s"\t*\n' "$user" "$pass" >>/etc/ppp/pap-secrets
-    printf '"%s"\t*\t"%s"\t*\n' "$user" "$pass" >>/etc/ppp/chap-secrets
-  fi
-  chmod 600 /etc/ppp/pap-secrets /etc/ppp/chap-secrets
-}
-
-nanopi_write_pppoe_server_unit() {
-  local lan="$1"
-  cat > "/etc/systemd/system/${PPPOE_SERVER_UNIT}" <<UNIT
-[Unit]
-Description=NanoPi LAN PPPoE server (accept-any)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/sbin/pppoe-server -F -I ${lan} -L 10.10.10.1 -R 10.10.10.2 -N 1 -C nanopi
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-}
-
-# flush ruleset в /etc/nftables.conf сносит auto_redirect sing-box.
-# После любого restart nftables / nft -f нужно поднять sing-box снова.
-nanopi_restart_nftables() {
-  systemctl restart nftables
-  if systemctl is-active --quiet sing-box 2>/dev/null || systemctl is-enabled --quiet sing-box 2>/dev/null; then
-    systemctl try-reload-or-restart sing-box 2>/dev/null || systemctl restart sing-box 2>/dev/null || true
-  fi
-}
-
-nanopi_ensure_lan_dual_serve() {
-  local lan wan
-  lan=${LAN_IF:-enp1s0}
-  wan=${WAN_IF:-end0}
-
-  nanopi_write_lan_netplan "$lan"
-  nanopi_write_dnsmasq_lan "$lan" "$wan"
-  nanopi_write_nft "$wan"
-  nanopi_write_pppoe_server_opts
-  # не затираем WAN-клиентские строки — вызывающий пишет secrets сам
-  if [[ ! -f /etc/ppp/pap-secrets ]]; then
-    nanopi_write_ppp_auth_secrets "" ""
-  fi
-  nanopi_write_pppoe_server_unit "$lan"
-
-  systemctl unmask dnsmasq 2>/dev/null || true
-  systemctl enable nftables dnsmasq "$PPPOE_SERVER_UNIT"
-  systemctl daemon-reload
-
-  ip link set "$lan" up || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    ip -4 -br addr show "$lan" 2>/dev/null | grep -q '10\.10\.10\.1' && break
-    sleep 0.5
-  done
-
-  nanopi_restart_nftables
-  nanopi_write_hairpin_dns_alias
-systemctl restart dnsmasq
-  systemctl restart "$PPPOE_SERVER_UNIT"
-}
-
-nanopi_stop_wan_pppoe() {
-  systemctl disable --now "$WAN_PPPOE_UNIT" 2>/dev/null || true
-  pkill -f 'pppd call nanopi-wan' 2>/dev/null || true
-  rm -f "$PPP_PEER"
-  if [[ -n "${PPPOE_VLAN:-}" ]]; then
-    ip link delete "${WAN_IF}.${PPPOE_VLAN}" 2>/dev/null || true
-  fi
-  rm -f "$NETPLAN_DIR"/45-router-wan-vlan.yaml
-}
-
-nanopi_write_wan_dhcp_netplan() {
-  local wan="$1"
-  rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
-  rm -f "$NETPLAN_DIR/45-router-wan-vlan.yaml"
-  cat > "$NETPLAN_DIR/40-router-wan-dhcp.yaml" <<YAML
-# NanoPi router: WAN (${wan}) = DHCP от ISP
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${wan}:
-      dhcp4: true
-      dhcp6: false
-      dhcp4-overrides:
-        route-metric: 100
-YAML
-  chmod 600 "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
-}
-
-nanopi_patch_singbox_exclude() {
-  # exclude_interface:
-  # - DHCP WAN: [WAN_IF]
-  # - PPPoE WAN: [WAN_IF, ppp0, optional WAN_IF.VLAN]
-  local cfg="${SINGBOX_CONFIG:-/etc/sing-box/config.json}"
-  local wan="$WAN_IF"
-  local vlan="${PPPOE_VLAN:-}"
-  local mode="${WAN_MODE:-dhcp}"
-  [[ -f "$cfg" ]] || return 0
-  local tmp
-  tmp=$(mktemp)
-  if [[ "$mode" == "pppoe" ]]; then
-    if [[ -n "$vlan" ]]; then
-      jq --arg wan "$wan" --arg vif "${wan}.${vlan}" '
-        (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0", $vif]
-      ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
-    else
-      jq --arg wan "$wan" '
-        (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan, "ppp0"]
-      ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
-    fi
-  else
-    jq --arg wan "$wan" '
-      (.inbounds[] | select(.type=="tun") | .exclude_interface) = [$wan]
-    ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
-  fi
-  chmod 600 "$cfg"
-  if command -v sing-box >/dev/null 2>&1; then
-    sing-box check -c "$cfg" >/dev/null 2>&1 || true
-  fi
-  systemctl try-reload-or-restart sing-box 2>/dev/null || systemctl restart sing-box 2>/dev/null || true
-}
-
-nanopi_read_ppp_password() {
-  if [[ -f "$PPP_SECRET_FILE" ]]; then
-    tr -d '\r\n' <"$PPP_SECRET_FILE"
-  else
-    echo -n ""
-  fi
-}
-
-nanopi_write_ppp_password() {
-  local pass="$1"
-  umask 077
-  printf '%s\n' "$pass" >"$PPP_SECRET_FILE"
-  chmod 600 "$PPP_SECRET_FILE"
-}
-EOF
-
-  cat > "$SCRIPTS_DIR/wan-dhcp" <<'EOF'
-#!/bin/bash
-# WAN = DHCP от ISP; LAN dual-serve не трогаем (кроме ensure).
-set -euo pipefail
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/common.sh"
-nanopi_load_env
-
-echo "==> wan-dhcp: ${WAN_IF} DHCP"
-
-nanopi_stop_wan_pppoe
-nanopi_write_wan_dhcp_netplan "$WAN_IF"
-nanopi_set_env_kv WAN_MODE dhcp
-# VLAN сбрасываем при откате на DHCP
-nanopi_set_env_kv PPPOE_VLAN ""
-PPPOE_VLAN=""
-
-nanopi_write_ppp_auth_secrets "" ""
-nanopi_ensure_lan_dual_serve
-
-netplan apply
-ip link set "$WAN_IF" up || true
-# nftables снова (после netplan); exclude + restart sing-box — последним
-nanopi_restart_nftables
-nanopi_patch_singbox_exclude
-nanopi_write_hairpin_dns_alias
-systemctl restart dnsmasq
-
-echo "[ok] wan-dhcp. WAN_MODE=dhcp"
-EOF
-
-  cat > "$SCRIPTS_DIR/wan-pppoe" <<'EOF'
-#!/bin/bash
-# WAN = PPPoE-клиент к ISP (+ опциональный VLAN). LAN dual-serve без изменений.
-# Env: PPPOE_USER, PPPOE_VLAN (из .env). Пароль: /etc/ppp/nanopi-wan.secret
-# CLI: wan-pppoe [user] [password] [vlan]
-#      или PPPOE_USER=… PPPOE_PASS=… PPPOE_VLAN=… wan-pppoe
-set -euo pipefail
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/common.sh"
-nanopi_load_env
-
-USER_IN="${1:-${PPPOE_USER:-}}"
-PASS_IN="${2:-${PPPOE_PASS:-}}"
-VLAN_IN="${3:-${PPPOE_VLAN:-}}"
-
-if [[ -z "$PASS_IN" && -f "$PPP_SECRET_FILE" && $# -lt 2 ]]; then
-  PASS_IN=$(nanopi_read_ppp_password)
-fi
-
-if [[ -z "$USER_IN" && -z "$PASS_IN" ]]; then
-  # пустые креды допустимы (редкий ISP); всё равно поднимаем peer
-  :
-fi
-
-if [[ -n "$VLAN_IN" ]]; then
-  if ! [[ "$VLAN_IN" =~ ^[0-9]+$ ]] || (( VLAN_IN < 1 || VLAN_IN > 4094 )); then
-    echo "ERROR: PPPOE_VLAN должен быть 1–4094 или пусто" >&2
-    exit 1
-  fi
-fi
-
-echo "==> wan-pppoe: user=${USER_IN:-(empty)} vlan=${VLAN_IN:-(none)}"
-
-nanopi_stop_wan_pppoe
-
-# WAN ethernet: без DHCP, только L2 (+ VLAN)
-rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml" "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
-
-if [[ -n "$VLAN_IN" ]]; then
-  cat > "$NETPLAN_DIR/45-router-wan-vlan.yaml" <<YAML
-# NanoPi WAN PPPoE поверх VLAN ${VLAN_IN}
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${WAN_IF}:
-      dhcp4: false
-      dhcp6: false
-      optional: true
-  vlans:
-    ${WAN_IF}.${VLAN_IN}:
-      id: ${VLAN_IN}
-      link: ${WAN_IF}
-      dhcp4: false
-      dhcp6: false
-YAML
-  chmod 600 "$NETPLAN_DIR/45-router-wan-vlan.yaml"
-  NIC="nic-${WAN_IF}.${VLAN_IN}"
-else
-  rm -f "$NETPLAN_DIR/45-router-wan-vlan.yaml"
-  cat > "$NETPLAN_DIR/40-router-wan-dhcp.yaml" <<YAML
-# NanoPi WAN: L2 для PPPoE (без DHCP)
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${WAN_IF}:
-      dhcp4: false
-      dhcp6: false
-      optional: true
-YAML
-  chmod 600 "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
-  NIC="nic-${WAN_IF}"
-fi
-
-nanopi_write_ppp_password "$PASS_IN"
-nanopi_set_env_kv WAN_MODE pppoe
-nanopi_set_env_kv PPPOE_USER "$USER_IN"
-nanopi_set_env_kv PPPOE_VLAN "$VLAN_IN"
-PPPOE_USER="$USER_IN"
-PPPOE_VLAN="$VLAN_IN"
-
-cat > "$PPP_PEER" <<PEER
-# NanoPi WAN PPPoE client → ISP
-plugin rp-pppoe.so
-${NIC}
-user "${USER_IN}"
-noipdefault
-defaultroute
-replacedefaultroute
-persist
-maxfail 0
-holdoff 5
-mtu 1492
-mru 1492
-usepeerdns
-lcp-echo-interval 30
-lcp-echo-failure 4
-nodetach
-PEER
-chmod 600 "$PPP_PEER"
-
-cat > "/etc/systemd/system/${WAN_PPPOE_UNIT}" <<UNIT
-[Unit]
-Description=NanoPi WAN PPPoE client
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/sbin/pppd call nanopi-wan
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-nanopi_ensure_lan_dual_serve
-nanopi_write_ppp_auth_secrets "$USER_IN" "$PASS_IN"
-
-netplan apply
-ip link set "$WAN_IF" up || true
-if [[ -n "$VLAN_IN" ]]; then
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    ip link show "${WAN_IF}.${VLAN_IN}" &>/dev/null && break
-    sleep 0.3
-  done
-fi
-
-systemctl daemon-reload
-systemctl enable "$WAN_PPPOE_UNIT"
-systemctl restart "$WAN_PPPOE_UNIT"
-# nftables снова; exclude + restart sing-box — последним (после flush)
-nanopi_restart_nftables
-nanopi_patch_singbox_exclude
-nanopi_write_hairpin_dns_alias
-systemctl restart dnsmasq
-
-echo "[ok] wan-pppoe. Жди UP ppp0: journalctl -u ${WAN_PPPOE_UNIT} -f"
-echo "    После UP ppp0: ${SCRIPT_DIR}/hairpin-dns-refresh"
-EOF
-
-  cat > "$SCRIPTS_DIR/wan-status" <<'EOF'
-#!/bin/bash
-# Статус WAN/LAN в JSON (для WebUI и CLI).
-set -euo pipefail
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/common.sh"
-nanopi_load_env
-
-mode=${WAN_MODE:-dhcp}
-user=${PPPOE_USER:-}
-vlan=${PPPOE_VLAN:-}
-pass=$(nanopi_read_ppp_password)
-
-ppp0_up=false
-ppp0_ip=""
-if ip link show ppp0 &>/dev/null; then
-  ppp0_up=true
-  ppp0_ip=$(ip -4 -o addr show ppp0 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
-fi
-
-wan_ip=$(ip -4 -o addr show "$WAN_IF" 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
-lan_ip=$(ip -4 -o addr show "$LAN_IF" 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)
-
-# LAN DHCP leases (активные)
-dhcp_leases=0
-lease_file=""
-for f in /var/lib/misc/dnsmasq.leases /var/lib/dnsmasq/dnsmasq.leases; do
-  if [[ -f "$f" ]]; then lease_file=$f; break; fi
-done
-if [[ -n "$lease_file" ]]; then
-  dhcp_leases=$(awk 'NF>=4 {c++} END{print c+0}' "$lease_file")
-fi
-
-# LAN PPPoE session (обычно ppp1)
-lan_pppoe_up=false
-lan_pppoe_if=""
-while read -r ifname; do
-  [[ "$ifname" == ppp0 ]] && continue
-  [[ "$ifname" =~ ^ppp[0-9]+$ ]] || continue
-  lan_pppoe_up=true
-  lan_pppoe_if=$ifname
-  break
-done < <(ip -br link 2>/dev/null | awk '{print $1}' | tr -d '@:*' || true)
-
-dnsmasq_active=$(systemctl is-active dnsmasq 2>/dev/null || echo inactive)
-pppoe_srv_active=$(systemctl is-active nanopi-pppoe-server.service 2>/dev/null || echo inactive)
-wan_pppoe_active=$(systemctl is-active nanopi-wan-pppoe.service 2>/dev/null || echo inactive)
-
-last_err=""
-if [[ "$mode" == pppoe ]]; then
-  last_err=$(journalctl -u nanopi-wan-pppoe.service -n 30 --no-pager -o cat 2>/dev/null \
-    | grep -iE 'failed|error|timeout|CHAP|PAP|Connection terminated|Modem hangup' \
-    | tail -3 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)
-fi
-
-if command -v jq >/dev/null 2>&1; then
-  jq -n \
-    --arg mode "$mode" \
-    --arg user "$user" \
-    --arg password "$pass" \
-    --arg vlan "$vlan" \
-    --arg wan_if "$WAN_IF" \
-    --arg lan_if "$LAN_IF" \
-    --arg wan_ip "$wan_ip" \
-    --arg lan_ip "$lan_ip" \
-    --arg ppp0_ip "$ppp0_ip" \
-    --argjson ppp0_up "$ppp0_up" \
-    --argjson lan_pppoe_up "$lan_pppoe_up" \
-    --arg lan_pppoe_if "$lan_pppoe_if" \
-    --argjson dhcp_leases "$dhcp_leases" \
-    --arg dnsmasq "$dnsmasq_active" \
-    --arg pppoe_server "$pppoe_srv_active" \
-    --arg wan_pppoe "$wan_pppoe_active" \
-    --arg last_error "$last_err" \
-    '{
-      mode: $mode,
-      user: $user,
-      password: $password,
-      vlan: $vlan,
-      wan_if: $wan_if,
-      lan_if: $lan_if,
-      wan_ip: $wan_ip,
-      lan_ip: $lan_ip,
-      ppp0_up: $ppp0_up,
-      ppp0_ip: $ppp0_ip,
-      lan_dhcp_leases: $dhcp_leases,
-      lan_pppoe_up: $lan_pppoe_up,
-      lan_pppoe_if: $lan_pppoe_if,
-      dnsmasq: $dnsmasq,
-      pppoe_server: $pppoe_server,
-      wan_pppoe_unit: $wan_pppoe,
-      last_error: $last_error
-    }'
-else
-  echo "{\"mode\":\"$mode\",\"error\":\"jq required\"}"
-  exit 1
-fi
-EOF
-
-  cat > "$SCRIPTS_DIR/router-on" <<'EOF'
-#!/bin/bash
-# Врезка: LAN dual-serve (DHCP + PPPoE-server) + WAN DHCP.
-set -euo pipefail
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/common.sh"
-nanopi_load_env
-
-echo "==> router-on"
-echo "    Кабели: ISP→WAN(${WAN_IF}), LAN(${LAN_IF})→WAN роутера."
-echo "    LAN: DHCP + PPPoE-server (accept-any). WAN по умолчанию DHCP."
-echo "    SSH может моргнуть на netplan apply."
-
-if [[ "${NANOPI_YES:-}" != "1" ]]; then
-  read -r -p "Продолжить? [y/N]: " reply || true
-  [[ "${reply:-}" =~ ^[Yy]$ ]] || exit 0
-fi
-
-rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
-"$SCRIPT_DIR/wan-dhcp"
-
-echo "[ok] router-on. Проверь: ip -br addr; ${LAN_IF}=10.10.10.1; wan-status"
-EOF
-
-  cat > "$SCRIPTS_DIR/lab-on" <<'EOF'
-#!/bin/bash
-# Откат в lab: WAN = DHCP в LAN домашнего роутера; dnsmasq/nft/pppoe off.
-set -euo pipefail
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/common.sh"
-nanopi_load_env
-
-echo "==> lab-on: ${WAN_IF} DHCP (домашняя LAN). SSH может моргнуть."
-
-nanopi_stop_wan_pppoe
-systemctl disable --now "$PPPOE_SERVER_UNIT" 2>/dev/null || true
-systemctl disable --now nftables 2>/dev/null || true
-systemctl mask dnsmasq 2>/dev/null || true
-systemctl stop dnsmasq 2>/dev/null || true
-rm -f /etc/dnsmasq.d/lan.conf
-rm -f "$NETPLAN_DIR"/40-router-wan-dhcp.yaml \
-      "$NETPLAN_DIR"/45-router-wan-vlan.yaml \
-      "$NETPLAN_DIR"/50-router-lan.yaml
-
-cat > "$NETPLAN_DIR/30-ethernets-dhcp.yaml" <<YAML
-# NanoPi lab: WAN (${WAN_IF}) в LAN домашнего роутера
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${WAN_IF}:
-      dhcp4: true
-      dhcp6: false
-YAML
-chmod 600 "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
-
-nanopi_set_env_kv WAN_MODE dhcp
-nanopi_set_env_kv PPPOE_VLAN ""
-
-netplan apply
-echo "[ok] lab-on. Проверь: ip -br addr"
-EOF
-
-  cat > "$SCRIPTS_DIR/proxy-select" <<'EOF'
-#!/bin/bash
-# CLI к clash_api: list | get | set <outbound-tag>
-set -euo pipefail
-ENV_FILE=/opt/nanopi-edge/.env
-[[ -f "$ENV_FILE" ]] || { echo "ERROR: нет $ENV_FILE" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-[[ -n "${CLASH_API:-}" && -n "${CLASH_SECRET:-}" ]] || {
-  echo "ERROR: в .env нет CLASH_API/CLASH_SECRET" >&2
-  exit 1
-}
-
-usage() {
-  echo "Usage: $0 list | get | set <outbound-tag>"
-  exit 1
-}
-
-auth_hdr=( -H "Authorization: Bearer ${CLASH_SECRET}" )
-
-wait_api() {
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -fsS -o /dev/null --connect-timeout 1 "${auth_hdr[@]}" "${CLASH_API}/version" 2>/dev/null; then
+  if [[ -f "$OPT_ENV" ]]; then
+    local r
+    r=$(grep -E '^WEBUI_GITHUB_REPO=' "$OPT_ENV" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '
+' || true)
+    if [[ -n "$r" ]]; then
+      echo "$r"
       return 0
     fi
-    sleep 0.5
+  fi
+  echo "${EDGE_GITHUB_REPO:-burzilov/nanopi-edge}"
+}
+
+ensure_download_deps() {
+  command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && return 0
+  info "Ставлю curl/jq для скачивания scripts bundle"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y --no-install-recommends curl jq ca-certificates
+}
+
+download_scripts_bundle() {
+  local tmp="$1" repo version api_base meta download_url tag
+  repo=$(edge_resolve_github_repo)
+  version="${EDGE_VERSION:-}"
+  api_base="https://api.github.com/repos/${repo}"
+
+  if [[ -n "$version" ]]; then
+    meta=$(edge_api_get "${api_base}/releases/tags/${version}")
+  else
+    meta=$(edge_api_get "${api_base}/releases/latest")
+  fi
+
+  tag=$(echo "$meta" | jq -r '.tag_name // empty')
+  [[ -n "$tag" ]] || die "не удалось получить tag release из ${repo}"
+
+  download_url=$(echo "$meta" | jq -r --arg n "$SCRIPTS_ASSET" \
+    '.assets[] | select(.name == $n) | .browser_download_url' | head -1)
+  [[ -n "$download_url" && "$download_url" != null ]] \
+    || die "в release ${tag} (${repo}) нет ассета ${SCRIPTS_ASSET}"
+
+  info "Скачиваю ${SCRIPTS_ASSET} из ${repo} (${tag})"
+  curl -fsSL -o "$tmp/$SCRIPTS_ASSET" "$download_url"
+  printf '%s\n' "$tag" >"$tmp/BUNDLE_TAG"
+}
+
+install_scripts_bundle() {
+  explain \
+    "Скачаю ${SCRIPTS_ASSET} из GitHub Release → ${SCRIPTS_DIR}/
+(router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, hairpin-dns-refresh,
+inbound-status, common.sh) + templates (sing-box.service, sysctl)." \
+    "Скрипты executable на месте; sing-box unit enabled"
+
+  ensure_download_deps
+  mkdir -p "$SCRIPTS_DIR" "$OPT_ROOT"
+  _SCRIPTS_INSTALL_TMP=$(mktemp -d)
+  download_scripts_bundle "$_SCRIPTS_INSTALL_TMP"
+
+  local stage bundle_root scripts_src templates_src archive
+  archive="$_SCRIPTS_INSTALL_TMP/$SCRIPTS_ASSET"
+  stage=$(mktemp -d)
+  tar -xzf "$archive" -C "$stage"
+
+  if [[ -f "$stage/nanopi-edge-scripts/scripts/common.sh" ]]; then
+    bundle_root="$stage/nanopi-edge-scripts"
+  elif [[ -f "$stage/scripts/common.sh" ]]; then
+    bundle_root="$stage"
+  else
+    local common_path
+    common_path=$(find "$stage" -type f -path '*/scripts/common.sh' | head -1)
+    [[ -n "$common_path" ]] || die "в bundle нет scripts/common.sh"
+    bundle_root=$(dirname "$(dirname "$common_path")")
+  fi
+  scripts_src="$bundle_root/scripts"
+  templates_src="$bundle_root/templates"
+  [[ -f "$scripts_src/common.sh" ]] || die "в bundle нет scripts/common.sh"
+
+  install -m 644 "$scripts_src/common.sh" "$SCRIPTS_DIR/common.sh"
+  for f in router-on lab-on wan-dhcp wan-pppoe wan-status proxy-select hairpin-dns-refresh inbound-status; do
+    [[ -f "$scripts_src/$f" ]] || die "в bundle нет scripts/$f"
+    install -m 755 "$scripts_src/$f" "$SCRIPTS_DIR/$f"
   done
-  echo "clash_api недоступен на ${CLASH_API}" >&2
-  return 1
+
+  local templates_dst="$OPT_ROOT/templates"
+  mkdir -p "$templates_dst"
+  [[ -d "$templates_src" ]] || die "в bundle нет каталога templates/"
+  cp -a "$templates_src/." "$templates_dst/"
+  chmod -R a+rX "$templates_dst"
+
+  [[ -f "$templates_dst/sing-box.service" ]] || die "в bundle нет templates/sing-box.service"
+  install -m 644 "$templates_dst/sing-box.service" "$UNIT_DST"
+  [[ -f "$templates_dst/dnsmasq-sing-box.conf" ]] || die "в bundle нет templates/dnsmasq-sing-box.conf"
+  mkdir -p /etc/systemd/system/dnsmasq.service.d
+  install -m 644 "$templates_dst/dnsmasq-sing-box.conf" /etc/systemd/system/dnsmasq.service.d/sing-box.conf
+  [[ -f "$templates_dst/99-nanopi-forward.conf" ]] || die "в bundle нет templates/99-nanopi-forward.conf"
+  install -m 644 "$templates_dst/99-nanopi-forward.conf" /etc/sysctl.d/99-nanopi-forward.conf
+  sysctl -p /etc/sysctl.d/99-nanopi-forward.conf
+
+  systemctl daemon-reload
+  systemctl enable sing-box
+
+  rm -rf "$stage" "$_SCRIPTS_INSTALL_TMP"
+  _SCRIPTS_INSTALL_TMP=
+  ok "scripts bundle установлен"
 }
 
-cmd="${1:-}"
-case "$cmd" in
-  list)
-    wait_api
-    curl -fsS "${auth_hdr[@]}" "${CLASH_API}/proxies" | jq '.proxies.proxy'
-    ;;
-  get)
-    wait_api
-    curl -fsS "${auth_hdr[@]}" "${CLASH_API}/proxies/proxy" | jq '{now, all, type}'
-    ;;
-  set)
-    name="${2:-}"
-    [[ -n "$name" ]] || usage
-    wait_api
-    curl -fsS -X PUT "${auth_hdr[@]}" \
-      -H 'Content-Type: application/json' \
-      -d "{\"name\":\"${name}\"}" \
-      "${CLASH_API}/proxies/proxy"
-    echo
-    curl -fsS "${auth_hdr[@]}" "${CLASH_API}/proxies/proxy" | jq '{now, all}'
-    ;;
-  *)
-    usage
-    ;;
-esac
-EOF
-
-
-  cat > "$SCRIPTS_DIR/hairpin-dns-refresh" <<'EOF'
-#!/bin/bash
-# Переписать /etc/dnsmasq.d/hairpin-alias.conf по HAIRPIN_DNS_TARGET + текущим WAN IP.
-set -euo pipefail
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/common.sh"
-nanopi_load_env
-nanopi_write_hairpin_dns_alias
-if [[ -n "${HAIRPIN_DNS_TARGET:-}" ]]; then
-  systemctl restart dnsmasq
-  echo "[ok] hairpin alias → ${HAIRPIN_DNS_TARGET}; dig @10.10.10.1 <домен>"
-else
-  systemctl restart dnsmasq 2>/dev/null || true
-  echo "[ok] HAIRPIN_DNS_TARGET пуст — alias удалён"
-fi
-EOF
-
-  cat > "$SCRIPTS_DIR/inbound-status" <<'EOF'
-#!/bin/bash
-# Метаданные мобильного VLESS inbound (без UUID/ключей/URI).
-set -euo pipefail
-# shellcheck disable=SC1091
-source /opt/nanopi-edge/scripts/common.sh
-nanopi_load_env
-
-STATE="${MOBILE_VLESS_STATE:-/etc/sing-box/inbound-vless-reality.json}"
-CFG="${SINGBOX_CONFIG:-/etc/sing-box/config.json}"
-
-enabled=false
-port=0
-configured=false
-inbound_present=false
-listen_ok=false
-
-if [[ -f "$STATE" ]]; then
-  enabled=$(jq -r '.enabled // false' "$STATE" 2>/dev/null || echo false)
-  port=$(jq -r '.port // 8443' "$STATE" 2>/dev/null || echo 0)
-  if jq -e '(.uuid // "") != "" and (.private_key // "") != ""' "$STATE" >/dev/null 2>&1; then
-    configured=true
-  fi
-fi
-
-if [[ -f "$CFG" ]] && jq -e '.inbounds[]? | select(.tag=="vless-mobile")' "$CFG" >/dev/null 2>&1; then
-  inbound_present=true
-fi
-
-if [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -gt 0 ]]; then
-  if ss -ltn 2>/dev/null | grep -qE ":${port}\\b"; then
-    listen_ok=true
-  fi
-fi
-
-jq -n \
-  --argjson enabled "$enabled" \
-  --argjson port "${port:-0}" \
-  --argjson configured "$configured" \
-  --argjson inbound_present "$inbound_present" \
-  --argjson listen_ok "$listen_ok" \
-  --arg singbox "$(systemctl is-active sing-box 2>/dev/null || echo unknown)" \
-  '{
-    enabled: $enabled,
-    port: $port,
-    configured: $configured,
-    inbound_present: $inbound_present,
-    listen_ok: $listen_ok,
-    singbox: $singbox
-  }'
-EOF
-
-  chmod 755 "$SCRIPTS_DIR"/router-on "$SCRIPTS_DIR"/lab-on \
-    "$SCRIPTS_DIR"/wan-dhcp "$SCRIPTS_DIR"/wan-pppoe \
-    "$SCRIPTS_DIR"/wan-status "$SCRIPTS_DIR"/proxy-select \
-    "$SCRIPTS_DIR"/hairpin-dns-refresh "$SCRIPTS_DIR"/inbound-status
-  chmod 644 "$SCRIPTS_DIR/common.sh"
-}
 
 # --- пакеты / sysctl / sing-box ---
 
@@ -1069,17 +356,6 @@ nftables/dnsmasq сразу выключу — в lab не должны слуш
   systemctl stop dnsmasq 2>/dev/null || true
 }
 
-install_sysctl() {
-  explain \
-    "Включу net.ipv4.ip_forward=1 persistently (/etc/sysctl.d/99-nanopi-forward.conf)." \
-    "sysctl net.ipv4.ip_forward = 1"
-
-  cat > /etc/sysctl.d/99-nanopi-forward.conf <<'EOF'
-# NanoPi edge router (схема B)
-net.ipv4.ip_forward = 1
-EOF
-  sysctl -p /etc/sysctl.d/99-nanopi-forward.conf
-}
 
 install_singbox_binary() {
   explain \
@@ -1105,33 +381,6 @@ install_singbox_binary() {
   "$SINGBOX_BIN" version | head -1
 }
 
-install_unit() {
-  explain \
-    "Поставлю systemd unit sing-box (enabled; старт после config.json)." \
-    "systemctl is-enabled sing-box = enabled"
-
-  cat > "$UNIT_DST" <<'EOF'
-[Unit]
-Description=sing-box service
-Documentation=https://sing-box.sagernet.org
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=infinity
-TimeoutStartSec=120
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable sing-box
-}
 
 write_dotenv_fresh() {
   local secret="$1"
@@ -1352,12 +601,17 @@ prompt_hairpin_dns() {
 
 build_singbox_config() {
   local nodes_file="$1" secret="$2" default_tag="$3"
+  local tpl="$OPT_ROOT/templates/sing-box.config.json.tpl"
+  local tmp rendered
 
   explain \
-    "Соберу единый ${SB_CFG}: TUN, AdGuard DoH, remote ruleset’ы, VLESS,
-selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (антипетля).
+    "Соберу единый ${SB_CFG} из шаблона + узлы VLESS (мастер).
+TUN, AdGuard DoH, remote ruleset’ы, selector proxy, clash_api.
+IP узлов (IPv4) и AdGuard — direct (антипетля).
 Если есть ${MOBILE_VLESS_STATE} (мобильный VLESS) — восстановлю inbound." \
     "sing-box check успешен; mode 0600"
+
+  [[ -f "$tpl" ]] || die "нет шаблона ${tpl} (обнови scripts bundle)"
 
   if [[ -f "$SB_CFG" ]]; then
     local bak="${SB_CFG}.bak.$(date +%Y%m%d%H%M%S)"
@@ -1366,148 +620,58 @@ selector proxy, clash_api. IP узлов (IPv4) и AdGuard — direct (анти�
   fi
 
   mkdir -p "$SB_DIR"
+  tmp=$(mktemp)
+  rendered=$(mktemp)
+  # Плейсхолдеры @WAN_IF@ / @CLASH_SECRET@ — остальное (outbounds, VPS /32) через jq.
+  sed -e "s/@WAN_IF@/${WAN_IF}/g" \
+      -e "s/@CLASH_SECRET@/${secret}/g" \
+      "$tpl" >"$rendered"
+
   jq -n \
     --slurpfile nodes "$nodes_file" \
-    --arg secret "$secret" \
     --arg default "$default_tag" \
-    --arg wan "$WAN_IF" '
+    --slurpfile base "$rendered" '
     ($nodes[0]) as $n |
     ($n | map(select(.server | test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$")) | .server + "/32")) as $vps_cidrs |
-    {
-      log: { level: "warn", timestamp: true },
-      dns: {
-        servers: [
-          { type: "local", tag: "dns-local" },
-          {
-            type: "https", tag: "dns-direct",
-            server: "94.140.14.14", server_port: 443, path: "/dns-query",
-            tls: { enabled: true, server_name: "dns.adguard-dns.com" }
-          },
-          {
-            type: "https", tag: "dns-quad9",
-            server: "9.9.9.9", server_port: 443, path: "/dns-query",
-            tls: { enabled: true, server_name: "dns.quad9.net" }
-          }
-        ],
-        final: "dns-direct",
-        strategy: "ipv4_only"
-      },
-      inbounds: [
-        {
-          type: "tun", tag: "tun-in",
-          interface_name: "sb-tun",
-          address: ["172.19.0.1/30"],
-          mtu: 1500,
-          auto_route: true,
-          strict_route: false,
-          stack: "mixed",
-          route_exclude_address: ["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"],
-          auto_redirect: true,
-          # ppp0 добавляется только при WAN_MODE=pppoe (nanopi_patch_singbox_exclude)
-          exclude_interface: [$wan]
-        }
-      ],
-      outbounds: (
-        [ { type: "direct", tag: "direct" } ]
-        + ($n | map({
-            type: "vless",
-            tag: .tag,
-            server: .server,
-            server_port: .server_port,
-            uuid: .uuid,
-            network: ["tcp","udp"],
-            flow: "xtls-rprx-vision",
-            tls: {
-              enabled: true,
-              server_name: .server_name,
-              utls: { enabled: true, fingerprint: "chrome" },
-              reality: {
+    ($base[0]
+      | .outbounds = (
+          [ { type: "direct", tag: "direct" } ]
+          + ($n | map({
+              type: "vless",
+              tag: .tag,
+              server: .server,
+              server_port: .server_port,
+              uuid: .uuid,
+              network: ["tcp", "udp"],
+              flow: "xtls-rprx-vision",
+              tls: {
                 enabled: true,
-                public_key: .public_key,
-                short_id: .short_id
+                server_name: .server_name,
+                utls: { enabled: true, fingerprint: "chrome" },
+                reality: {
+                  enabled: true,
+                  public_key: .public_key,
+                  short_id: .short_id
+                }
               }
-            }
-          }))
-        + [{
-            type: "selector",
-            tag: "proxy",
-            outbounds: ($n | map(.tag)),
-            default: $default
-          }]
-      ),
-      route: {
-        rules: [
-          { action: "reject", ip_cidr: ["169.254.0.0/16"] },
-          { port: 53, action: "hijack-dns" },
-          { action: "route", outbound: "direct", ip_is_private: true },
-          { action: "sniff", timeout: "300ms" },
-          { port: 853, action: "reject" },
-          {
-            action: "route", outbound: "direct",
-            ip_cidr: (
-              ["94.140.14.14/32","94.140.15.15/32","9.9.9.9/32"] + $vps_cidrs
+            }))
+          + [{
+              type: "selector",
+              tag: "proxy",
+              outbounds: ($n | map(.tag)),
+              default: $default
+            }]
+        )
+      | .route.rules = (
+          .route.rules
+          | map(
+              if .ip_cidr then .ip_cidr += $vps_cidrs else . end
             )
-          },
-          { action: "route", outbound: "direct", protocol: "bittorrent" },
-          {
-            action: "route", outbound: "proxy",
-            domain_suffix: ["2ip.io","ipify.org"]
-          },
-          {
-            action: "route", outbound: "proxy",
-            rule_set: [
-              "geosite-category-ai-!cn",
-              "geosite-ru-blocked",
-              "geoip-ru-blocked",
-              "geosite-telegram",
-              "geoip-telegram"
-            ]
-          },
-          {
-            action: "route", outbound: "direct",
-            domain_suffix: [".ru",".su",".рф"]
-          }
-        ],
-        rule_set: [
-          {
-            type: "remote", tag: "geosite-ru-blocked", format: "binary",
-            url: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geosite/geosite-ru-blocked.srs",
-            download_detour: "direct", update_interval: "6h"
-          },
-          {
-            type: "remote", tag: "geoip-ru-blocked", format: "binary",
-            url: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru-blocked.srs",
-            download_detour: "direct", update_interval: "6h"
-          },
-          {
-            type: "remote", tag: "geosite-category-ai-!cn", format: "binary",
-            url: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geosite/geosite-category-ai-!cn.srs",
-            download_detour: "direct", update_interval: "6h"
-          },
-          {
-            type: "remote", tag: "geosite-telegram", format: "binary",
-            url: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geosite/geosite-telegram.srs",
-            download_detour: "direct", update_interval: "6h"
-          },
-          {
-            type: "remote", tag: "geoip-telegram", format: "binary",
-            url: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-telegram.srs",
-            download_detour: "direct", update_interval: "6h"
-          }
-        ],
-        final: "direct",
-        auto_detect_interface: true,
-        default_domain_resolver: "dns-direct"
-      },
-      experimental: {
-        cache_file: { enabled: true, path: "/var/lib/sing-box/cache.db" },
-        clash_api: {
-          external_controller: "127.0.0.1:9090",
-          secret: $secret
-        }
-      }
-    }
-  ' > "$SB_CFG"
+        )
+    )
+  ' >"$tmp"
+  mv "$tmp" "$SB_CFG"
+  rm -f "$rendered"
   chmod 600 "$SB_CFG"
 
   apply_mobile_vless_inbound
@@ -1848,8 +1012,8 @@ print_cutover() {
 
 1) Клиенты роутера — убрать «старый» gateway/DNS
    • Gateway = сам роутер (обычно 192.168.1.1), НЕ старый прокси/VM.
-   • DNS клиентов = 10.10.10.1 (NanoPi) для hairpin доменов Nginx Proxy Manager
-     (HAIRPIN_DNS_TARGET); иначе DNS = роутер.
+   • DNS клиентов = 10.10.10.1 (NanoPi): dnsmasq → sing-box :5353 (DoH, race).
+     HAIRPIN_DNS_TARGET — подмена A белого WAN → NPM в LAN.
 
 2) Роутерный профиль на NanoPi (lab-кабель ещё можно не трогать)
    ${SCRIPTS_DIR}/router-on
@@ -2006,22 +1170,16 @@ EOF
     "Запишу/обновлю постоянные scripts/ (router-on, wan-*, lab-on, proxy-select)." \
     "${SCRIPTS_DIR}/router-on и остальные на месте"
   mkdir -p "$OPT_ROOT"
-  write_ops_scripts
+  install_scripts_bundle
   install_self_copy
 
   step 4 "Пакеты"
   install_packages
 
-  step 5 "ip_forward"
-  install_sysctl
-
-  step 6 "Бинарник sing-box"
+  step 5 "Бинарник sing-box"
   install_singbox_binary
 
-  step 7 "systemd unit"
-  install_unit
-
-  step 8 ".env (${OPT_ENV})"
+  step 6 ".env (${OPT_ENV})"
   gen_clash_secrets
   # EDGE_VERSION мог прийти из WebUI — дописать после merge/fresh
   if [[ -n "${EDGE_VERSION:-}" ]]; then
@@ -2029,15 +1187,15 @@ EOF
   fi
 
 
-  step 9 "config.json"
+  step 7 "config.json"
   maybe_rebuild_config "$CLASH_SECRET_VALUE"
 
   if [[ "$INSTALL_MODE" == "upgrade" ]]; then
-    step 10 "nftables (если router)"
+    step 8 "nftables (если router)"
     refresh_nft_if_router
   fi
 
-  step 11 "Запуск sing-box"
+  step 9 "Запуск sing-box"
   start_singbox
 
   if [[ "$INSTALL_MODE" == "upgrade" ]]; then

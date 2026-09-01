@@ -1,0 +1,56 @@
+#!/bin/bash
+# CLI к clash_api: list | get | set <outbound-tag>
+set -euo pipefail
+ENV_FILE=/opt/nanopi-edge/.env
+[[ -f "$ENV_FILE" ]] || { echo "ERROR: нет $ENV_FILE" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+[[ -n "${CLASH_API:-}" && -n "${CLASH_SECRET:-}" ]] || {
+  echo "ERROR: в .env нет CLASH_API/CLASH_SECRET" >&2
+  exit 1
+}
+
+usage() {
+  echo "Usage: $0 list | get | set <outbound-tag>"
+  exit 1
+}
+
+auth_hdr=( -H "Authorization: Bearer ${CLASH_SECRET}" )
+
+wait_api() {
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS -o /dev/null --connect-timeout 1 "${auth_hdr[@]}" "${CLASH_API}/version" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "clash_api недоступен на ${CLASH_API}" >&2
+  return 1
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  list)
+    wait_api
+    curl -fsS "${auth_hdr[@]}" "${CLASH_API}/proxies" | jq '.proxies.proxy'
+    ;;
+  get)
+    wait_api
+    curl -fsS "${auth_hdr[@]}" "${CLASH_API}/proxies/proxy" | jq '{now, all, type}'
+    ;;
+  set)
+    name="${2:-}"
+    [[ -n "$name" ]] || usage
+    wait_api
+    curl -fsS -X PUT "${auth_hdr[@]}" \
+      -H 'Content-Type: application/json' \
+      -d "{\"name\":\"${name}\"}" \
+      "${CLASH_API}/proxies/proxy"
+    echo
+    curl -fsS "${auth_hdr[@]}" "${CLASH_API}/proxies/proxy" | jq '{now, all}'
+    ;;
+  *)
+    usage
+    ;;
+esac

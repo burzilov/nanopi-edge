@@ -1,0 +1,13 @@
+[Unit]
+Description=NanoPi WAN PPPoE client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/pppd call nanopi-wan
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

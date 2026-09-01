@@ -1,0 +1,78 @@
+#!/bin/bash
+# WAN = PPPoE-клиент к ISP (+ опциональный VLAN). LAN dual-serve без изменений.
+# Env: PPPOE_USER, PPPOE_VLAN (из .env). Пароль: /etc/ppp/nanopi-wan.secret
+# CLI: wan-pppoe [user] [password] [vlan]
+#      или PPPOE_USER=… PPPOE_PASS=… PPPOE_VLAN=… wan-pppoe
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+USER_IN="${1:-${PPPOE_USER:-}}"
+PASS_IN="${2:-${PPPOE_PASS:-}}"
+VLAN_IN="${3:-${PPPOE_VLAN:-}}"
+
+if [[ -z "$PASS_IN" && -f "$PPP_SECRET_FILE" && $# -lt 2 ]]; then
+  PASS_IN=$(nanopi_read_ppp_password)
+fi
+
+if [[ -z "$USER_IN" && -z "$PASS_IN" ]]; then
+  # пустые креды допустимы (редкий ISP); всё равно поднимаем peer
+  :
+fi
+
+if [[ -n "$VLAN_IN" ]]; then
+  if ! [[ "$VLAN_IN" =~ ^[0-9]+$ ]] || (( VLAN_IN < 1 || VLAN_IN > 4094 )); then
+    echo "ERROR: PPPOE_VLAN должен быть 1–4094 или пусто" >&2
+    exit 1
+  fi
+fi
+
+echo "==> wan-pppoe: user=${USER_IN:-(empty)} vlan=${VLAN_IN:-(none)}"
+
+nanopi_stop_wan_pppoe
+
+rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml" "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
+
+if [[ -n "$VLAN_IN" ]]; then
+  nanopi_write_wan_vlan_netplan "$WAN_IF" "$VLAN_IN"
+  NIC="nic-${WAN_IF}.${VLAN_IN}"
+else
+  rm -f "$NETPLAN_DIR/45-router-wan-vlan.yaml"
+  nanopi_write_wan_pppoe_l2_netplan "$WAN_IF"
+  NIC="nic-${WAN_IF}"
+fi
+
+nanopi_write_ppp_password "$PASS_IN"
+nanopi_set_env_kv WAN_MODE pppoe
+nanopi_set_env_kv PPPOE_USER "$USER_IN"
+nanopi_set_env_kv PPPOE_VLAN "$VLAN_IN"
+PPPOE_USER="$USER_IN"
+PPPOE_VLAN="$VLAN_IN"
+
+nanopi_write_wan_ppp_peer "$NIC" "$USER_IN"
+nanopi_write_wan_pppoe_unit
+
+nanopi_ensure_lan_dual_serve
+nanopi_write_ppp_auth_secrets "$USER_IN" "$PASS_IN"
+
+netplan apply
+ip link set "$WAN_IF" up || true
+if [[ -n "$VLAN_IN" ]]; then
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    ip link show "${WAN_IF}.${VLAN_IN}" &>/dev/null && break
+    sleep 0.3
+  done
+fi
+
+systemctl daemon-reload
+systemctl enable "$WAN_PPPOE_UNIT"
+systemctl restart "$WAN_PPPOE_UNIT"
+nanopi_restart_nftables
+nanopi_patch_singbox_exclude
+nanopi_write_hairpin_dns_alias
+systemctl restart dnsmasq
+
+echo "[ok] wan-pppoe. Жди UP ppp0: journalctl -u ${WAN_PPPOE_UNIT} -f"
+echo "    После UP ppp0: ${SCRIPT_DIR}/hairpin-dns-refresh"
