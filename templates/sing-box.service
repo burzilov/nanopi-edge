@@ -1,0 +1,18 @@
+[Unit]
+Description=sing-box service
+Documentation=https://sing-box.sagernet.org
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecStartPost=/bin/sh -c 'systemctl is-enabled --quiet dnsmasq 2>/dev/null && systemctl try-restart dnsmasq || true'
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=infinity
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

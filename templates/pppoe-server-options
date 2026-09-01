@@ -1,0 +1,13 @@
+# NanoPi LAN PPPoE server — accept-any (в т.ч. пустые креды)
+noauth
+nologin
+ms-dns 10.10.10.1
+netmask 255.255.255.0
+default-asyncmap
+mtu 1492
+mru 1492
+lcp-echo-interval 30
+lcp-echo-failure 4
+noipdefault
+nodefaultroute
+noproxyarp

@@ -1,0 +1,6 @@
+# Managed by nanopi-webui — port forwards (do not edit)
+table inet nanopi_portforward {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+}

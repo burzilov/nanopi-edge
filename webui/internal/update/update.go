@@ -20,6 +20,7 @@ const (
 	WebUIArchiveAsset = "nanopi-webui-linux-arm64.tar.gz"
 	WebUIScriptAsset  = "install-webui.sh"
 	EdgeScriptAsset   = "install-singbox.sh"
+	EdgeScriptsAsset  = "nanopi-edge-scripts.tar.gz"
 	DefaultStatusPath = "/opt/nanopi-edge/update-status.json"
 	DefaultUpdateLog  = "/opt/nanopi-edge/update.log"
 )
@@ -283,9 +284,13 @@ func Check(repo, webuiCurrent, edgeCurrent string) (CheckResult, error) {
 	out.Edge.Name = rel.Name
 	out.Edge.Body = rel.Body
 	out.Edge.HTMLURL = rel.HTMLURL
-	out.Edge.AssetOK = assetURL(rel, EdgeScriptAsset) != ""
-	if !out.Edge.AssetOK {
+	hasEdgeScript := assetURL(rel, EdgeScriptAsset) != ""
+	hasEdgeScripts := assetURL(rel, EdgeScriptsAsset) != ""
+	out.Edge.AssetOK = hasEdgeScript && hasEdgeScripts
+	if !hasEdgeScript {
 		out.Edge.Error = fmt.Sprintf("нет ассета %s", EdgeScriptAsset)
+	} else if !hasEdgeScripts {
+		out.Edge.Error = fmt.Sprintf("нет ассета %s", EdgeScriptsAsset)
 	} else if edgeCurrent == "" || edgeCurrent == "unknown" {
 		out.Edge.UpdateAvailable = false
 		out.Edge.Error = "EDGE_VERSION не задан в .env"

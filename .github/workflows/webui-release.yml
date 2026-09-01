@@ -69,11 +69,34 @@ jobs:
             "${GITHUB_WORKSPACE}/install-singbox.sh" \
             "${GITHUB_WORKSPACE}/install-webui.sh"
 
+      - name: Pack edge scripts
+        id: pack_scripts
+        working-directory: ${{ github.workspace }}
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          STAGE="nanopi-edge-scripts"
+          mkdir -p "/tmp/${STAGE}/scripts" "/tmp/${STAGE}/templates"
+          cp -r scripts/* "/tmp/${STAGE}/scripts/"
+          cp -r templates/* "/tmp/${STAGE}/templates/"
+          printf '%s\n' "$VER" > "/tmp/${STAGE}/VERSION"
+          ARCHIVE="nanopi-edge-scripts.tar.gz"
+          tar -C /tmp -czf "${GITHUB_WORKSPACE}/${ARCHIVE}" "$STAGE"
+          echo "scripts_archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+          tar tzf "${GITHUB_WORKSPACE}/${ARCHIVE}"
+          test "$(find /tmp/${STAGE}/scripts -type f | wc -l)" -eq 9
+          test "$(find /tmp/${STAGE}/templates -type f | wc -l)" -eq 17
+
       - name: Upload artifact (workflow)
         uses: actions/upload-artifact@v4
         with:
           name: nanopi-webui-linux-arm64
           path: ${{ steps.pack.outputs.archive }}
+
+      - name: Upload edge scripts artifact (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanopi-edge-scripts
+          path: ${{ steps.pack_scripts.outputs.scripts_archive }}
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
@@ -81,6 +104,7 @@ jobs:
         with:
           files: |
             ${{ steps.pack.outputs.archive }}
+            ${{ steps.pack_scripts.outputs.scripts_archive }}
             install-singbox.sh
             install-webui.sh
           generate_release_notes: true
@@ -89,8 +113,9 @@ jobs:
 
             Ассеты:
             - `nanopi-webui-linux-arm64.tar.gz` — бинарь + unit
+            - `nanopi-edge-scripts.tar.gz` — scripts/ + templates (router-on, wan-*, sing-box.service, sysctl)
             - `install-webui.sh` — установщик панели
-            - `install-singbox.sh` — установщик / upgrade edge
+            - `install-singbox.sh` — установщик / upgrade edge (скачивает scripts bundle)
 
             С платы (панель «Проверить обновления») или вручную:
             ```bash

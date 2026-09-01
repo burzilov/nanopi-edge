@@ -1,0 +1,22 @@
+#!/bin/bash
+# Врезка: LAN dual-serve (DHCP + PPPoE-server) + WAN DHCP.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+echo "==> router-on"
+echo "    Кабели: ISP→WAN(${WAN_IF}), LAN(${LAN_IF})→WAN роутера."
+echo "    LAN: DHCP + PPPoE-server (accept-any). WAN по умолчанию DHCP."
+echo "    SSH может моргнуть на netplan apply."
+
+if [[ "${NANOPI_YES:-}" != "1" ]]; then
+  read -r -p "Продолжить? [y/N]: " reply || true
+  [[ "${reply:-}" =~ ^[Yy]$ ]] || exit 0
+fi
+
+rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
+"$SCRIPT_DIR/wan-dhcp"
+
+echo "[ok] router-on. Проверь: ip -br addr; ${LAN_IF}=10.10.10.1; wan-status"

@@ -1,0 +1,15 @@
+#!/bin/bash
+# Переписать /etc/dnsmasq.d/hairpin-alias.conf по HAIRPIN_DNS_TARGET + текущим WAN IP.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+nanopi_write_hairpin_dns_alias
+if [[ -n "${HAIRPIN_DNS_TARGET:-}" ]]; then
+  systemctl restart dnsmasq
+  echo "[ok] hairpin alias → ${HAIRPIN_DNS_TARGET}; dig @10.10.10.1 <домен>"
+else
+  systemctl restart dnsmasq 2>/dev/null || true
+  echo "[ok] HAIRPIN_DNS_TARGET пуст — alias удалён"
+fi

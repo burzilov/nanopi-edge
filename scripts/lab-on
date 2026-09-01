@@ -1,0 +1,27 @@
+#!/bin/bash
+# Откат в lab: WAN = DHCP в LAN домашнего роутера; dnsmasq/nft/pppoe off.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+nanopi_load_env
+
+echo "==> lab-on: ${WAN_IF} DHCP (домашняя LAN). SSH может моргнуть."
+
+nanopi_stop_wan_pppoe
+systemctl disable --now "$PPPOE_SERVER_UNIT" 2>/dev/null || true
+systemctl disable --now nftables 2>/dev/null || true
+systemctl mask dnsmasq 2>/dev/null || true
+systemctl stop dnsmasq 2>/dev/null || true
+rm -f /etc/dnsmasq.d/lan.conf
+rm -f "$NETPLAN_DIR"/40-router-wan-dhcp.yaml \
+      "$NETPLAN_DIR"/45-router-wan-vlan.yaml \
+      "$NETPLAN_DIR"/50-router-lan.yaml
+
+nanopi_write_lab_netplan "$WAN_IF"
+
+nanopi_set_env_kv WAN_MODE dhcp
+nanopi_set_env_kv PPPOE_VLAN ""
+
+netplan apply
+echo "[ok] lab-on. Проверь: ip -br addr"
