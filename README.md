@@ -20,15 +20,32 @@ ISP (DHCP или PPPoE ± VLAN)
 - Выборочный прокси: remote ruleset’ы + домены → VLESS, остальное — direct
 - Несколько VLESS+Reality узлов, переключение через clash_api / CLI / WebUI
 - **Мобильный VLESS+Reality** (TCP/8443): один Hiddify-профиль, трафик через те же route-правила
-- DNS: AdGuard DoH в sing-box; dnsmasq на LAN → AdGuard
+- DNS: клиенты → `10.10.10.1` (dnsmasq) → sing-box `:5353` (DoH race AdGuard/Quad9); hairpin alias в dnsmasq
 - WAN к ISP: **DHCP** или **PPPoE** (логин/пароль, опциональный VLAN) — CLI и WebUI
 - LAN к роутеру: одновременно DHCP и PPPoE-server (accept-any) — роутер может
   оставаться в своём WAN-режиме
 - Лёгкая веб-панель (Go + HTMX): статус, WAN, логи, proxy, домены, мобильный VLESS, проброс портов, конфиг
-- Установщики: один файл `install-singbox.sh` (на плате пишет `/opt/nanopi-edge/scripts/`)
+- Установщики: `install-singbox.sh` + scripts bundle из GitHub Release (`nanopi-edge-scripts.tar.gz`)
 
 **Не цель проекта:** тяжёлый firewall, WireGuard как основной транспорт,
 IPv6 в первой итерации, раздача белого IP роутеру (passthrough).
+
+## DNS
+
+Клиенты с дефолтными настройками (DHCP/PPPoE от NanoPi) получают **DNS = 10.10.10.1**.
+Дальше цепочка такая:
+
+```text
+клиент → 10.10.10.1:53 (dnsmasq) → 127.0.0.1:5353 (sing-box dns-in)
+         → dns.rules (race AdGuard DoH / Quad9 DoH)
+```
+
+Локальные подмены (hairpin для Nginx Proxy Manager) по-прежнему в **dnsmasq**
+(`hairpin-alias.conf`), до форварда в sing-box.
+
+Upstream и failover правятся в `/etc/sing-box/config.json` (панель **Конфиг** или
+вручную) → `sing-box check` → перезапуск sing-box; dnsmasq перезапустится сам
+(`ExecStartPost` в unit sing-box).
 
 ## Железо и ОС
 
@@ -43,8 +60,9 @@ IPv6 в первой итерации, раздача белого IP роуте
 
 ### 1. Edge (sing-box)
 
-На **чистой** Armbian, пока WAN NanoPi в LAN домашнего роутера (lab, есть
-интернет и SSH):
+На **чистой** Armbian, пока WAN NanoPi в LAN домашнего роутера (lab, нужны
+**интернет и SSH**). Установщик скачивает `nanopi-edge-scripts.tar.gz` с GitHub
+Release — для первой установки нужен уже опубликованный тег с этим ассетом.
 
 ```bash
 scp install-singbox.sh root@<lab-ip>:
@@ -64,7 +82,8 @@ bash install-singbox.sh
 
 ```text
 /opt/nanopi-edge/.env
-/opt/nanopi-edge/scripts/{router-on,lab-on,wan-dhcp,wan-pppoe,wan-status,proxy-select,common.sh}
+/opt/nanopi-edge/scripts/{router-on,lab-on,wan-dhcp,wan-pppoe,wan-status,proxy-select,hairpin-dns-refresh,inbound-status,common.sh}
+/opt/nanopi-edge/templates/
 /etc/sing-box/config.json
 ```
 
@@ -126,12 +145,14 @@ bash install-webui.sh
 
 | Путь                 | Назначение                                           |
 | -------------------- | ---------------------------------------------------- |
-| `install-singbox.sh` | Одноразовая установка edge (+ вшитые scripts/)       |
+| `install-singbox.sh` | Установка / upgrade edge (скачивает scripts bundle)    |
+| `scripts/`           | Операционные скрипты (в релизе: `nanopi-edge-scripts.tar.gz`) |
+| `templates/`         | Шаблоны (dnsmasq, netplan, sing-box.config.json.tpl, …) |
 | `lab/`               | Fake ISP/CPE и чеклист PPPoE-стенда                  |
 | `install-webui.sh`   | Установка панели с GitHub Release                    |
 | `release.sh`         | Patch-релиз: `VERSION` ↑, commit, tag, push          |
 | `webui/`             | Исходники панели (Go)                                |
-| `.github/workflows/` | Сборка `nanopi-webui-linux-arm64.tar.gz` на тег `v*` |
+| `.github/workflows/` | Сборка артефактов на тег `v*` (webui, scripts, установщики) |
 | `VERSION`            | Текущая версия релиза                                |
 
 Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE,
@@ -148,6 +169,10 @@ bash install-webui.sh
 /opt/nanopi-edge/scripts/wan-status | jq .
 /opt/nanopi-edge/scripts/hairpin-dns-refresh   # если задан HAIRPIN_DNS_TARGET
 /opt/nanopi-edge/scripts/inbound-status | jq . # мобильный VLESS (без секретов)
+
+# DNS клиентов (dnsmasq → sing-box)
+dig @10.10.10.1 google.com +short
+dig @127.0.0.1 -p 5353 google.com +short   # напрямую в sing-box dns-in
 
 # обновить edge (scripts/бинарь; config.json не трогает)
 # NANOPI_YES=1 bash install-singbox.sh
@@ -184,7 +209,7 @@ make build-arm64    # кросс для платы
 ./release.sh          # например 0.0.0 → 0.0.1, tag v0.0.1, push
 ```
 
-Actions соберёт артефакт и приложит к GitHub Release.
+Actions соберёт артефакты (`nanopi-webui-linux-arm64.tar.gz`, `nanopi-edge-scripts.tar.gz`, установщики) и приложит к GitHub Release.
 
 ## Лицензия
 
