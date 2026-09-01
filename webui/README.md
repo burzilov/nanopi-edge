@@ -9,8 +9,9 @@ API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-ppp
 Пароль ISP хранится в `/etc/ppp/nanopi-wan.secret` (0600), в форму подставляется
 целиком (LAN trust).
 
-Домены → proxy правятся прямо в `/etc/sing-box/config.json` (правило
-`outbound=proxy` + `domain_suffix`), без отдельного `domains-proxy.json`.
+Домены → proxy и секция `dns` в `/etc/sing-box/config.json` правятся в панели
+**Конфиг** (или вручную): домены — правило `outbound=proxy` + `domain_suffix`;
+DNS — `dns.servers` / `dns.rules`. Перед перезапуском — `sing-box check`.
 
 **Nginx Proxy Manager:** страница `/proxy-manager` — IP виртуалки в домашней LAN;
 NanoPi сам ставит DNAT 80/443, маршрут за CPE и DNS hairpin. Пустое сохранение всё снимает.
@@ -45,7 +46,8 @@ WEBUI_VERSION=v0.0.2 bash install-webui.sh --noninteractive
 ```
 
 В панели на статусе: «Проверить обновления» → при наличии релиза — «Обновить»
-(скачивает `install-singbox.sh` и `install-webui.sh` из ассетов, запускает
+(скачивает `install-singbox.sh` и `install-webui.sh` из ассетов; edge-установщик
+подтягивает `nanopi-edge-scripts.tar.gz` с того же тега; запускает
 в **отдельном процессе**: edge → webui). Страница перезагружается только когда
 `/api/updates/status` = ok и обе версии (webui + EDGE_VERSION) совпали с тегом.
 Прогресс: `GET /api/updates/status`, лог: `/opt/nanopi-edge/update.log`.

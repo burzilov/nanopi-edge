@@ -1,3 +1,4 @@
 lab/
 webui/dist/
 *.tgz
+.test-sb/
