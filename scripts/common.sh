@@ -37,7 +37,7 @@ nanopi_render_template() {
     content=${content//@${key}@/$val}
     shift
   done
-  printf '%s' "$content" >"$dest"
+  printf "%s\n" "$content" >"$dest"
 }
 
 nanopi_install_template() {
