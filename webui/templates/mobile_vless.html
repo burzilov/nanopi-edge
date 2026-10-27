@@ -20,15 +20,19 @@
 {{end}}
 
 {{define "mobile_vless_inner"}}
-<section class="mv-page">
+<header class="page-header">
+  <div class="page-heading">
   <h1>Мобильный VLESS</h1>
-  <p class="hint">Входящий <strong>VLESS + Reality</strong> для одного телефона (Hiddify).
+  <p class="page-desc">Входящий <strong>VLESS + Reality</strong> для одного телефона (Hiddify).
     Трафик идёт по тем же правилам sing-box, что и домашний TUN.</p>
-  <p class="hint warn-hint">Панель без пароля: любой с доступом к
+  <p class="callout callout-warn">Панель без пароля: любой с доступом к
     <code>http://10.10.10.1/</code> может выдать или отозвать профиль.
     Не выставляйте WebUI в интернет.</p>
+  </div>
+</header>
+<div class="mv-page cards-grid">
 
-  <div class="card ports-card mv-status-card">
+  <div class="card ports-card mv-status-card span-full">
     <dl class="pm-meta mv-meta">
       <div>
         <dt>Состояние</dt>
@@ -75,7 +79,7 @@
 
   {{if not .HasProfile}}
   <div class="card ports-card mv-step">
-    <h2>Шаг 1. Создать профиль</h2>
+    <h2 class="card-title">Шаг 1. Создать профиль</h2>
     <p class="hint">Генерируются ключи Reality и UUID. Маскировочный сайт настроите на следующем шаге —
       до этого inbound не слушает порт.</p>
     <form class="ports-form"
@@ -102,7 +106,7 @@
   {{else}}
 
   <div class="card ports-card mv-step">
-    <h2>Шаг 2. Маскировочный TLS-сайт</h2>
+    <h2 class="card-title">Шаг 2. Маскировочный TLS-сайт</h2>
     <p class="hint">Это не адрес Hiddify, а сайт для Reality handshake / SNI.
       Endpoint телефона — WAN IP NanoPi и порт из шага 1.</p>
     <p class="hint">Профиль: <code>{{if .Label}}{{.Label}}{{else}}mobile{{end}}</code>
@@ -151,7 +155,7 @@
   </div>
 
   <div class="card ports-card mv-step">
-    <h2>Профиль и QR</h2>
+    <h2 class="card-title">Профиль и QR</h2>
     <div class="mv-actions mv-actions-row">
       {{if .Enabled}}
       <form hx-post="/mobile-vless/profile/show" hx-target="#mv-profile" hx-swap="innerHTML">
@@ -179,8 +183,8 @@
   </div>
   {{end}}
 
-  <div class="card mv-step">
-    <h2>Проверка с телефона</h2>
+  <div class="card card-muted mv-step">
+    <h2 class="card-title">Проверка с телефона</h2>
     <ol class="hint mv-checklist">
       <li>С Wi‑Fi (Hiddify выкл.) убедитесь, что сайты NPM на 80/443 работают как раньше.</li>
       <li>Импортируйте QR в Hiddify, включите в домашнем Wi‑Fi.</li>
@@ -188,7 +192,7 @@
       <li>Проверьте ресурс из proxy-правил (например ipify) и любой <code>.ru</code> для direct.</li>
     </ol>
   </div>
-</section>
+</div>
 {{template "oob/toast" .}}
 {{end}}
 

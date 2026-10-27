@@ -18,18 +18,30 @@
 {{end}}
 
 {{define "domains_inner"}}
-<section>
-  <h1>Домены → прокси</h1>
-  <p class="hint">Список сайтов и доменов, трафик к которым идёт через VPN (VLESS),
-    а не напрямую в интернет. Один домен или суффикс на строку, например
-    <code>youtube.com</code> или <code>.google.com</code> (точка в начале —
-    все поддомены). Остальной трафик идёт без прокси.</p>
-  <p class="hint">После сохранения sing-box перезапустится — интернет на несколько
-    секунд может моргнуть.</p>
-  <form hx-post="/domains/save-restart" hx-target="#domains-main" hx-swap="innerHTML">
-    <textarea name="domains" rows="20" class="wide" placeholder="youtube.com&#10;.google.com">{{.Text}}</textarea>
-    <button type="submit">Сохранить и перезапустить</button>
-  </form>
-</section>
+<header class="page-header">
+  <div class="page-heading">
+    <h1>Домены → прокси</h1>
+    <p class="page-desc">Список сайтов и доменов, трафик к которым идёт через VPN (VLESS),
+      а не напрямую в интернет. Остальной трафик идёт без прокси.</p>
+  </div>
+</header>
+<div class="split">
+  <div class="card">
+    <form hx-post="/domains/save-restart" hx-target="#domains-main" hx-swap="innerHTML">
+      <textarea name="domains" rows="22" class="wide mono code-editor" spellcheck="false" placeholder="youtube.com&#10;.google.com">{{.Text}}</textarea>
+      <div class="form-actions">
+        <button type="submit">Сохранить и перезапустить</button>
+      </div>
+    </form>
+  </div>
+  <aside class="card card-muted">
+    <h2 class="card-title">Формат</h2>
+    <p class="hint">Один домен или суффикс на строку, например
+      <code>youtube.com</code> или <code>.google.com</code> (точка в начале —
+      все поддомены).</p>
+    <p class="hint">После сохранения sing-box перезапустится — интернет на несколько
+      секунд может моргнуть.</p>
+  </aside>
+</div>
 {{template "oob/toast" .}}
 {{end}}

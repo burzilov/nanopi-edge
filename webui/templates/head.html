@@ -1,8 +1,10 @@
-{{/* Общая часть <head>: тема до отрисовки (без вспышки), стили. */}}
+{{/* Общая часть <head>: тема до отрисовки (без вспышки), стили.
+     Сохранённый выбор (localStorage["nanopi-theme"]) — главный; если его нет,
+     тема берётся из системной (prefers-color-scheme) и не сохраняется. */}}
 {{define "head"}}
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)">
-  <script>(function(){try{var t=localStorage.getItem("nanopi-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
+  <script>(function(){var t=null;try{t=localStorage.getItem("nanopi-theme");}catch(e){}if(t!=="light"&&t!=="dark"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);})();</script>
   <link rel="stylesheet" href="/static/app.css?v={{AppVersion}}">
 {{end}}

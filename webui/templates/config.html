@@ -18,18 +18,22 @@
 {{end}}
 
 {{define "config_inner"}}
-<section>
-  <h1>Конфиг sing-box</h1>
-  <p class="hint">Полный файл настроек sing-box в формате JSON. Обычно достаточно
-    страниц «Домены» и «Статус» — правьте этот файл только если понимаете структуру
-    или копируете готовый конфиг. Ошибка в JSON может оставить прокси нерабочим.</p>
+<header class="page-header">
+  <div class="page-heading">
+    <h1>Конфиг sing-box</h1>
+    <p class="page-desc">Полный файл настроек sing-box в формате JSON. Обычно достаточно
+      страниц «Домены» и «Статус» — правьте этот файл только если понимаете структуру
+      или копируете готовый конфиг. Ошибка в JSON может оставить прокси нерабочим.</p>
+  </div>
+</header>
+<div class="card">
   <p class="hint">Сначала нажмите «Проверить без сохранения»: панель прогонит
     <code>sing-box check</code> и покажет ошибки, не записывая файл. «Сохранить и
     перезапустить» запишет конфиг и перезапустит сервис — связь может кратко пропасть.</p>
   {{if .CheckOut}}<pre class="logs">{{.CheckOut}}</pre>{{end}}
   <form>
-    <textarea name="config" rows="28" class="wide mono">{{.Config}}</textarea>
-    <div class="row">
+    <textarea name="config" rows="28" class="wide mono code-editor" spellcheck="false">{{.Config}}</textarea>
+    <div class="form-actions">
       <button type="button"
               hx-post="/config/check" hx-target="#config-main" hx-swap="innerHTML"
               hx-include="closest form">Проверить без сохранения</button>
@@ -38,6 +42,6 @@
               hx-include="closest form">Сохранить и перезапустить</button>
     </div>
   </form>
-</section>
+</div>
 {{template "oob/toast" .}}
 {{end}}

@@ -10,20 +10,22 @@
 </head>
 <body>
   {{template "nav" .}}
-  <main>
-    <section>
-      <div class="logs-head">
+  <main class="main-fill">
+    <header class="page-header">
+      <div class="page-heading">
         <h1>Логи sing-box</h1>
+        <p class="page-desc">Журнал работы прокси в реальном времени: подключения, ошибки,
+          смена маршрутов. Полезно, если сайты не открываются или VPN «отвалился».
+          «Очистить» только скрывает уже показанные строки на экране — файлы на диске
+          не трогает.</p>
+      </div>
+      <div class="page-actions">
         <button type="button" id="log-clear" class="secondary">Очистить</button>
       </div>
-      <p class="hint">Журнал работы прокси в реальном времени: подключения, ошибки,
-        смена маршрутов. Полезно, если сайты не открываются или VPN «отвалился».
-        «Очистить» только скрывает уже показанные строки на экране — файлы на диске
-        не трогает.</p>
-      {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
-      <div id="log-view" class="logs">{{.LogsHTML}}</div>
-      <script src="/static/logs.js?v={{AppVersion}}"></script>
-    </section>
+    </header>
+    {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+    <div id="log-view" class="logs logs-fill">{{.LogsHTML}}</div>
+    <script src="/static/logs.js?v={{AppVersion}}"></script>
   </main>
 </body>
 </html>

@@ -59,6 +59,7 @@ func TestThemeHead(t *testing.T) {
 	head := b.String()
 	for _, want := range []string{
 		`localStorage.getItem("nanopi-theme")`,
+		`(prefers-color-scheme: dark)`,
 		`setAttribute("data-theme",t)`,
 		`<meta name="color-scheme" content="light dark">`,
 		`href="/static/app.css?v=v9.9.9"`,
@@ -71,6 +72,10 @@ func TestThemeHead(t *testing.T) {
 	if strings.Index(head, "nanopi-theme") > strings.Index(head, "app.css") {
 		t.Fatal("theme script must precede stylesheet")
 	}
+	// Без сохранённого выбора head только читает системную тему, но не сохраняет её.
+	if strings.Contains(head, "setItem") {
+		t.Fatal("head must not save the theme")
+	}
 }
 
 func TestNavThemeToggle(t *testing.T) {
@@ -80,12 +85,23 @@ func TestNavThemeToggle(t *testing.T) {
 	}
 	nav := b.String()
 	for _, want := range []string{
-		`class="secondary theme-toggle"`, `aria-label="Тема оформления"`,
-		`class="ti ti-auto"`, `class="ti ti-light"`, `class="ti ti-dark"`,
-		`/static/theme.js?v=v9.9.9`, `class="brand"`, `hx-post="/sing-box/restart"`,
+		`class="ghost theme-toggle"`, `aria-label="Тема оформления"`,
+		`class="ti ti-light"`, `class="ti ti-dark"`,
+		`/static/theme.js?v=v9.9.9`, `/static/nav.js?v=v9.9.9`,
+		`class="brand"`, `class="sidebar"`, `nav-burger`, `id="topbar-section"`,
+		`hx-post="/sing-box/restart"`,
 	} {
 		if !strings.Contains(nav, want) {
 			t.Fatalf("nav missing %q", want)
+		}
+	}
+	// Режима «авто» в переключателе больше нет: только светлая и тёмная.
+	if strings.Contains(nav, "ti-auto") {
+		t.Fatal("nav must not have the auto theme icon")
+	}
+	for _, href := range []string{`href="/"`, `href="/logs"`, `href="/domains"`, `href="/port-forwards"`, `href="/mobile-vless"`, `href="/config"`} {
+		if !strings.Contains(nav, href) {
+			t.Fatalf("sidebar missing link %s", href)
 		}
 	}
 }
@@ -100,20 +116,27 @@ func TestThemeStatic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	navJS, err := os.ReadFile(filepath.Join("..", "..", "static", "nav.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{
 		`:root[data-theme="dark"]`, `@media (prefers-color-scheme: dark)`,
-		`:root:not([data-theme])`, `--accent:`, `--surface:`,
+		`:root:not([data-theme])`, `--accent:`, `--surface:`, `.sidebar`, `.nav-open`,
 	} {
 		if !strings.Contains(string(css), want) {
 			t.Fatalf("app.css missing %q", want)
 		}
 	}
-	for _, want := range []string{`"nanopi-theme"`, `localStorage.setItem`, `localStorage.removeItem`, `aria-label`} {
+	for _, want := range []string{`"nanopi-theme"`, `localStorage.setItem`, `localStorage.removeItem`, `aria-label`, `prefers-color-scheme`} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("theme.js missing %q", want)
 		}
 	}
-	for _, src := range [][]byte{css, js} {
+	if strings.Contains(string(js), `"auto"`) {
+		t.Fatal(`theme.js must not have the "auto" mode`)
+	}
+	for _, src := range [][]byte{css, js, navJS} {
 		for _, bad := range []string{"http://", "https://", "@import", "url("} {
 			if strings.Contains(string(src), bad) {
 				t.Fatalf("static must not reference external resources: %q", bad)
