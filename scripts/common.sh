@@ -50,45 +50,93 @@ nanopi_install_template() {
 # Локальный DNS hairpin: A-записи с белым IP WAN → HAIRPIN_DNS_TARGET
 # (напр. Nginx Proxy Manager в LAN роутера).
 # В публичном скрипте IP нет — только опциональный ключ в /opt/nanopi-edge/.env.
+# Исключения «имя → адрес» (имя и поддомены ведут не на общий адрес, а на свой,
+# например DSM на NAS) — в HAIRPIN_OVERRIDES_FILE (JSON, правит webui):
+#   {"overrides":[{"name":"nas.example.org","ip":"192.168.1.90"}]}
+# Для них пишется address=/имя/ip: dnsmasq отвечает сам, до форварда, и alias=
+# (переписывает только ответы upstream) их не трогает.
 # Клиентам дома: DHCP DNS = 10.10.10.1 (NanoPi).
-nanopi_write_hairpin_dns_alias() {
-  local conf=/etc/dnsmasq.d/hairpin-alias.conf
-  local target="${HAIRPIN_DNS_TARGET:-}"
-  mkdir -p /etc/dnsmasq.d
-  if [[ -z "$target" ]]; then
-    rm -f "$conf"
+HAIRPIN_DNS_CONF="${HAIRPIN_DNS_CONF:-/etc/dnsmasq.d/hairpin-alias.conf}"
+HAIRPIN_OVERRIDES_FILE="${HAIRPIN_OVERRIDES_FILE:-/opt/nanopi-edge/hairpin-overrides.json}"
+
+# Валидные исключения строками «имя ip» (битые пропускаются с WARN).
+nanopi_hairpin_overrides() {
+  local f="$HAIRPIN_OVERRIDES_FILE" name ip
+  [[ -s "$f" ]] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "WARN: нет jq — исключения hairpin из $f не применены" >&2
     return 0
   fi
-  if ! [[ "$target" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  local lines
+  if ! lines=$(jq -r '.overrides[]? | "\(.name // "")\t\(.ip // "")"' "$f" 2>/dev/null); then
+    echo "WARN: $f не читается как JSON — исключения hairpin пропущены" >&2
+    return 0
+  fi
+  local label='[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+  while IFS=$'\t' read -r name ip; do
+    [[ -n "$name" ]] || continue
+    if ! [[ "$name" =~ ^(${label}\.)+${label}$ && ${#name} -le 253 ]]; then
+      echo "WARN: hairpin: имя '$name' не похоже на DNS-имя — пропуск" >&2
+      continue
+    fi
+    if ! [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      echo "WARN: hairpin: адрес '$ip' для $name не IPv4 — пропуск" >&2
+      continue
+    fi
+    printf '%s %s\n' "$name" "$ip"
+  done <<<"$lines"
+}
+
+nanopi_write_hairpin_dns_alias() {
+  local conf="$HAIRPIN_DNS_CONF"
+  local target="${HAIRPIN_DNS_TARGET:-}"
+  mkdir -p "$(dirname "$conf")"
+  if [[ -n "$target" ]] && ! [[ "$target" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     echo "WARN: HAIRPIN_DNS_TARGET='$target' не IPv4 — alias не пишу" >&2
+    target=""
+  fi
+  local overrides
+  overrides=$(nanopi_hairpin_overrides)
+  if [[ -z "$target" && -z "$overrides" ]]; then
+    rm -f "$conf"
     return 0
   fi
   local -a wan_ips=()
   local ifc ip
-  for ifc in "${WAN_IF:-end0}" ppp0; do
-    ip link show "$ifc" &>/dev/null || continue
-    while read -r ip; do
-      [[ -n "$ip" && "$ip" != "$target" ]] || continue
-      wan_ips+=("$ip")
-    done < <(ip -4 -o addr show dev "$ifc" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
-  done
-  if [[ ${#wan_ips[@]} -eq 0 ]]; then
-    printf '%s\n' \
-      "# Managed by nanopi-edge — HAIRPIN_DNS_TARGET=${target}" \
-      "# WAN IPv4 пока нет; перезапишется после wan-dhcp/wan-pppoe / hairpin-dns-refresh" \
-      >"$conf"
-    return 0
+  if [[ -n "$target" ]]; then
+    for ifc in "${WAN_IF:-end0}" ppp0; do
+      ip link show "$ifc" &>/dev/null || continue
+      while read -r ip; do
+        [[ -n "$ip" && "$ip" != "$target" ]] || continue
+        wan_ips+=("$ip")
+      done < <(ip -4 -o addr show dev "$ifc" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
+    done
   fi
+  local tmp="${conf}.tmp"
   {
     echo "# Managed by nanopi-edge — hairpin DNS (do not edit)"
-    echo "# HAIRPIN_DNS_TARGET=${target}  (из ${ENV_FILE})"
-    local seen=""
-    for ip in "${wan_ips[@]}"; do
-      [[ " $seen " == *" $ip "* ]] && continue
-      seen+=" $ip"
-      echo "alias=${ip},${target}"
-    done
-  } >"$conf"
+    [[ -z "$target" ]] || echo "# HAIRPIN_DNS_TARGET=${target}  (из ${ENV_FILE})"
+    if [[ -n "$overrides" ]]; then
+      echo "# Исключения (${HAIRPIN_OVERRIDES_FILE}): имя и поддомены → свой адрес, до alias"
+      local name
+      while read -r name ip; do
+        echo "address=/${name}/${ip}"
+      done <<<"$overrides"
+    fi
+    if [[ -n "$target" ]]; then
+      if [[ ${#wan_ips[@]} -eq 0 ]]; then
+        echo "# WAN IPv4 пока нет; перезапишется после wan-dhcp/wan-pppoe / hairpin-dns-refresh"
+      fi
+      local seen=""
+      for ip in "${wan_ips[@]}"; do
+        [[ " $seen " == *" $ip "* ]] && continue
+        seen+=" $ip"
+        echo "alias=${ip},${target}"
+      done
+    fi
+  } >"$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$conf"
 }
 
 nanopi_set_env_kv() {

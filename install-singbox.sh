@@ -1172,7 +1172,7 @@ cmd_install() {
 
 Режим: upgrade (автодетект повторного запуска)
 Router live: ${ROUTER_LIVE} (1 = dnsmasq/nft не гасим)
-Сохраняю: ${SB_CFG}, CLASH_SECRET, WAN_MODE/PPPoE, port-forwards
+Сохраняю: ${SB_CFG}, CLASH_SECRET, WAN_MODE/PPPoE, port-forwards, hairpin (+ исключения)
 Обновляю: ${SCRIPTS_DIR}/, пакеты, бинарь sing-box, unit, ключи .env
 
 EOF

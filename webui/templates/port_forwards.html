@@ -20,13 +20,13 @@
 {{define "port_forwards_inner"}}
 <section>
   <h1>Проброс портов</h1>
-  <p class="hint">Входящие подключения из интернета на внешний порт NanoPi
+  <p class="hint">Подключения из интернета на внешний порт NanoPi
     (WAN{{if .WanIPs}}: {{range $i, $ip := .WanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{end}})
-    перенаправляются на внутренний адрес. Обычно это хост в сети NanoPi
-    {{if .LanCIDR}}<code>{{.LanCIDR}}</code>{{end}}, например WAN домашнего роутера.
-    Изменения применяются сразу. Перезапуска sing-box нет, текущие подключения не рвутся.</p>
-  <p class="hint">Правила <span class="pill muted">NPM</span> (порты 80 и 443) создаёт страница
-    <a href="/proxy-manager">Nginx Proxy Manager</a>, там же они меняются.</p>
+    пробрасываются на домашний роутер (Keenetic). Других устройств за NanoPi нет: роутер — его
+    единственный клиент в сети {{if .LanCIDR}}<code>{{.LanCIDR}}</code>{{else}}NanoPi{{end}}, поэтому внутренний IP
+    в правилах — это WAN-адрес роутера (например, <code>10.10.10.179</code>).</p>
+  <p class="hint">Дальше, на NAS и другие домашние устройства, порты пробрасываются на самом роутере.
+    Изменения применяются сразу, sing-box не перезапускается.</p>
 
   <div class="card ports-card">
     <h2 class="card-title">Правила</h2>
@@ -56,7 +56,7 @@
                     hx-target="#port-forwards-main"
                     hx-swap="innerHTML">
                 <input type="hidden" name="id" value="{{.ID}}">
-                <div class="row">
+                <div class="ports-grid">
                   <label>Протокол
                     <select name="proto">
                       <option value="tcp" {{if eq $ef.Proto "tcp"}}selected{{end}}>TCP</option>
@@ -64,27 +64,25 @@
                       <option value="both" {{if eq $ef.Proto "both"}}selected{{end}}>TCP+UDP</option>
                     </select>
                   </label>
-                  <label class="ports-port">Внешний порт
+                  <label>Внешний порт
                     <input name="wan_port" type="number" min="1" max="65535" required value="{{$ef.WanPort}}">
                   </label>
-                  <label class="grow">Внутренний IP
+                  <label>Внутренний IP
                     <input name="dest_ip" type="text" required value="{{$ef.DestIP}}" placeholder="10.10.10.179" autocomplete="off">
                   </label>
-                  <label class="ports-port">Внутренний порт
+                  <label>Внутренний порт
                     <input name="dest_port" type="number" min="1" max="65535" value="{{$ef.DestPort}}" placeholder="как внешний">
                   </label>
-                </div>
-                <div class="row">
-                  <label class="grow">Комментарий
+                  <label>Комментарий
                     <input name="comment" type="text" maxlength="120" value="{{$ef.Comment}}" autocomplete="off">
                   </label>
-                  <div class="ports-add-actions">
-                    <button type="submit">Сохранить и применить</button>
-                    <button type="button" class="secondary"
-                            hx-get="/port-forwards/inner"
-                            hx-target="#port-forwards-main"
-                            hx-swap="innerHTML">Отмена</button>
-                  </div>
+                </div>
+                <div class="ports-add-actions">
+                  <button type="submit">Сохранить и применить</button>
+                  <button type="button" class="secondary"
+                          hx-get="/port-forwards/inner"
+                          hx-target="#port-forwards-main"
+                          hx-swap="innerHTML">Отмена</button>
                 </div>
               </form>
             </td>
@@ -92,9 +90,6 @@
           {{else}}
           <tr class="{{if not .Enabled}}ports-off{{end}}">
             <td>
-              {{if .Managed}}
-                {{if .Enabled}}✓{{else}}—{{end}}
-              {{else}}
               <form class="inline"
                     hx-post="/port-forwards/toggle"
                     hx-target="#port-forwards-main"
@@ -104,7 +99,6 @@
                 <button type="submit" class="secondary ports-toggle"
                         title="{{if .Enabled}}Выключить{{else}}Включить{{end}}">{{if .Enabled}}✓{{else}}—{{end}}</button>
               </form>
-              {{end}}
             </td>
             <td>{{.ProtoLabel}}</td>
             <td><code>{{.WanPort}}</code></td>
@@ -113,26 +107,26 @@
             </td>
             <td><code>{{.DestPort}}</code></td>
             <td class="ports-comment">
-              {{if .Managed}}<span class="pill muted">NPM</span>{{else}}{{.Comment}}{{end}}
+              {{.Comment}}
             </td>
             <td>{{if and .Enabled .HasStats}}{{.ConnsLabel}} / {{.TrafficLabel}}{{else}}—{{end}}</td>
-            <td>
-              {{if .Managed}}
-                <a href="/proxy-manager">настроить</a>
-              {{else}}
-              <button type="button" class="secondary"
+            <td class="ports-actions">
+              <button type="button" class="secondary icon-btn" title="Изменить" aria-label="Изменить"
                       hx-get="/port-forwards/inner?edit={{.ID}}"
                       hx-target="#port-forwards-main"
-                      hx-swap="innerHTML">Изменить</button>
+                      hx-swap="innerHTML">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 20h4L18.5 9.5a2.83 2.83 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>
+              </button>
               <form class="inline"
                     hx-post="/port-forwards/delete"
                     hx-target="#port-forwards-main"
                     hx-swap="innerHTML"
                     hx-confirm="Удалить проброс {{.ProtoLabel}} {{.WanPort}} → {{.DestIP}}:{{.DestPort}}?">
                 <input type="hidden" name="id" value="{{.ID}}">
-                <button type="submit" class="danger">Удалить</button>
+                <button type="submit" class="danger icon-btn" title="Удалить" aria-label="Удалить">
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>
+                </button>
               </form>
-              {{end}}
             </td>
           </tr>
           {{end}}
@@ -152,7 +146,7 @@
           hx-post="/port-forwards/add"
           hx-target="#port-forwards-main"
           hx-swap="innerHTML">
-      <div class="row">
+      <div class="ports-grid">
         <label>Протокол
           <select name="proto">
             <option value="tcp" {{if eq .Form.Proto "tcp"}}selected{{end}}>TCP</option>
@@ -160,23 +154,21 @@
             <option value="both" {{if eq .Form.Proto "both"}}selected{{end}}>TCP+UDP</option>
           </select>
         </label>
-        <label class="ports-port">Внешний порт
+        <label>Внешний порт
           <input name="wan_port" type="number" min="1" max="65535" required value="{{.Form.WanPort}}" placeholder="5001">
         </label>
-        <label class="grow">Внутренний IP
+        <label>Внутренний IP
           <input name="dest_ip" type="text" required value="{{.Form.DestIP}}" placeholder="10.10.10.179" autocomplete="off">
         </label>
-        <label class="ports-port">Внутренний порт
+        <label>Внутренний порт
           <input name="dest_port" type="number" min="1" max="65535" value="{{.Form.DestPort}}" placeholder="как внешний">
         </label>
-      </div>
-      <div class="row">
-        <label class="grow">Комментарий
+        <label>Комментарий
           <input name="comment" type="text" maxlength="120" value="{{.Form.Comment}}" placeholder="например, dsm-nas" autocomplete="off">
         </label>
-        <div class="ports-add-actions">
-          <button type="submit">Добавить и применить</button>
-        </div>
+      </div>
+      <div class="ports-add-actions">
+        <button type="submit">Добавить и применить</button>
       </div>
     </form>
   </div>
@@ -196,16 +188,16 @@
         <label><input type="checkbox" name="enabled" value="1" {{if .RateLimit.Enabled}}checked{{end}}> Включено</label>
         <label><input type="checkbox" name="log" value="1" {{if .RateLimit.Log}}checked{{end}}> Писать в журнал (не чаще 6 записей в минуту)</label>
       </div>
-      <div class="row">
-        <label class="ports-port">Новых в минуту
+      <div class="ports-grid ports-grid-fixed">
+        <label>Новых в минуту
           <input name="per_minute" type="number" min="10" max="100000" required value="{{.RateLimit.PerMinStr}}">
         </label>
-        <label class="ports-port">Всплеск
+        <label>Всплеск
           <input name="burst" type="number" min="1" max="100000" required value="{{.RateLimit.BurstStr}}">
         </label>
-        <div class="ports-add-actions">
-          <button type="submit">Применить</button>
-        </div>
+      </div>
+      <div class="ports-add-actions">
+        <button type="submit">Применить</button>
       </div>
     </form>
     <p class="hint ports-hairpin-meta">
@@ -216,30 +208,111 @@
     </p>
   </div>
 
-  <div class="card ports-card">
-    <h2 class="card-title">Маршрут в домашнюю сеть за роутером</h2>
-    <p class="hint">Нужен, только если внутренний IP находится в сети за домашним роутером
-      (например <code>192.168.1.50</code>), а не в сети NanoPi. NanoPi добавит маршрут в эту сеть через
-      WAN роутера и подменит адрес отправителя (masquerade), чтобы ответы шли обратно через NanoPi.
-      На роутере при этом должен быть разрешён доступ из его WAN в домашнюю сеть.
-      Чтобы снять маршрут, очистите оба поля.</p>
+  <div class="card ports-card" id="hairpin">
+    <h2 class="card-title">DNS hairpin</h2>
+    <p class="hint"><strong>Зачем:</strong> локальный DNS NanoPi (dnsmasq) отвечает домашним
+      клиентам на внешнее имя, которое ведёт на белый IP, внутренним адресом из этого поля.
+      Так запросы изнутри идут напрямую по домашней сети, а не по кругу через WAN (hairpin).
+      Адрес подставляется для имени целиком, на всех портах.</p>
+    <p class="hint"><strong>Что вписать у нас:</strong> локальный IP Nginx Proxy Manager за роутером
+      (сейчас 192.168.1.137): имена на :80/:443 должны попадать на NPM.
+      <strong>Учтите:</strong> то же внешнее имя на другом порту (например, DSM :5001) из дома
+      тоже пойдёт на этот адрес. Для таких имён ниже есть исключения. Пустое поле — общая
+      подмена выключена (исключения продолжают действовать).</p>
     <form class="ports-form"
-          hx-post="/port-forwards/home-route"
+          hx-post="/port-forwards/hairpin"
           hx-target="#port-forwards-main"
           hx-swap="innerHTML">
-      <div class="row">
-        <label class="grow">Домашняя сеть
-          <input name="home_net" type="text" value="{{.HomeNet}}" placeholder="192.168.1.0/24" autocomplete="off">
+      <div class="ports-grid ports-grid-fixed">
+        <label>Домашний IP для подмены
+          <input name="target" type="text" inputmode="decimal" value="{{.Hairpin.Input}}"
+                 placeholder="192.168.1.137" maxlength="15" autocomplete="off">
         </label>
-        <label class="grow">WAN роутера
-          <input name="home_via" type="text" value="{{.HomeVia}}" placeholder="10.10.10.179" autocomplete="off">
-        </label>
-        <div class="ports-add-actions">
-          <button type="submit">Сохранить маршрут</button>
-        </div>
+      </div>
+      <div class="ports-add-actions">
+        <button type="submit">Сохранить и применить</button>
+        {{if .Hairpin.Target}}
+        <button type="submit" class="secondary" name="disable" value="1"
+                hx-confirm="Выключить подмену DNS? Из дома домены пойдут на белый IP.">Отключить</button>
+        {{end}}
       </div>
     </form>
+    <p class="hint ports-hairpin-meta">
+      {{if .Hairpin.Err}}{{.Hairpin.Err}}{{else}}
+      {{if and .Hairpin.Target .Hairpin.Active}}<span class="pill ok">включено</span>
+      {{else if .Hairpin.Target}}<span class="pill">не применено</span>
+      {{else}}<span class="pill">выключено</span>{{end}}
+      {{if .Hairpin.WanIPs}} · белый IP {{range $i, $ip := .Hairpin.WanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{if .Hairpin.Target}} → <code>{{.Hairpin.Target}}</code>{{end}}{{else}} · белый IP на WAN не найден{{end}}
+      · <code>HAIRPIN_DNS_TARGET</code> в <code>.env</code>, alias в <code>{{.Hairpin.ConfPath}}</code>
+      {{end}}
+    </p>
+
+    <h3 class="card-subtitle">Исключения</h3>
+    <p class="hint">Исключения: эти имена (и их поддомены) вместо адреса NPM будут вести на указанный
+      адрес. Пример: <code>nas.example.com</code> → <code>192.168.1.90</code> (NAS).
+      <strong>Поддомены входят всегда:</strong> исключение для <code>nas.example.com</code>
+      действует и на <code>photos.nas.example.com</code>, поэтому для имени, у которого
+      поддомены должны идти на NPM, исключение не подходит. Исключения работают и при выключенной
+      общей подмене. До {{.Hairpin.MaxOverrides}} записей.</p>
+    {{if .Hairpin.Overrides}}
+    <div class="ports-table-wrap">
+      <table class="ports-table">
+        <thead>
+          <tr>
+            <th>Имя</th>
+            <th>Адрес</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Hairpin.Overrides}}
+          <tr>
+            <td><code>{{.Name}}</code></td>
+            <td><code>{{.IP}}</code>{{if not .Applied}} <span class="pill" title="Строки нет в конфиге dnsmasq — нажмите «Сохранить и применить» выше или обновите скрипты платы">не применено</span>{{end}}</td>
+            <td class="ports-actions">
+              <form class="inline"
+                    hx-post="/port-forwards/hairpin/override/delete"
+                    hx-target="#port-forwards-main"
+                    hx-swap="innerHTML"
+                    hx-confirm="Удалить исключение {{.Name}} → {{.IP}}?">
+                <input type="hidden" name="name" value="{{.Name}}">
+                <button type="submit" class="danger icon-btn" title="Удалить" aria-label="Удалить">
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>
+                </button>
+              </form>
+            </td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="hint">Исключений нет.</p>
+    {{end}}
+    <form class="ports-form ports-override-form"
+          hx-post="/port-forwards/hairpin/override/add"
+          hx-target="#port-forwards-main"
+          hx-swap="innerHTML">
+      <div class="ports-grid ports-grid-fixed">
+        <label>Имя
+          <input name="name" type="text" required maxlength="253" value="{{.Hairpin.OvName}}"
+                 placeholder="nas.example.com" autocomplete="off" spellcheck="false">
+        </label>
+        <label>Адрес
+          <input name="ip" type="text" required inputmode="decimal" maxlength="15" value="{{.Hairpin.OvIP}}"
+                 placeholder="192.168.1.90" autocomplete="off">
+        </label>
+      </div>
+      <div class="ports-add-actions">
+        <button type="submit" class="icon-btn" title="Добавить исключение" aria-label="Добавить исключение">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+    </form>
+    <p class="hint ports-hairpin-meta">Исключения хранятся в <code>{{.Hairpin.OverridesPath}}</code>,
+      в конфиге dnsmasq это строки <code>address=/имя/адрес</code>.</p>
   </div>
+
 </section>
 {{template "oob/toast" .}}
 {{end}}

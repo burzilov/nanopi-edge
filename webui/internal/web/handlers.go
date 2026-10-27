@@ -18,7 +18,6 @@ import (
 	"nanopi-webui/internal/domains"
 	"nanopi-webui/internal/logfmt"
 	"nanopi-webui/internal/mobilevless"
-	"nanopi-webui/internal/proxymgr"
 	"nanopi-webui/internal/sbconfig"
 	"nanopi-webui/internal/sysd"
 	"nanopi-webui/internal/update"
@@ -62,12 +61,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /port-forwards/update", s.handlePortFwdUpdate)
 	mux.HandleFunc("POST /port-forwards/toggle", s.handlePortFwdToggle)
 	mux.HandleFunc("POST /port-forwards/delete", s.handlePortFwdDelete)
-	mux.HandleFunc("POST /port-forwards/home-route", s.handlePortFwdHomeRoute)
 	mux.HandleFunc("POST /port-forwards/rate-limit", s.handlePortFwdRateLimit)
+	mux.HandleFunc("POST /port-forwards/hairpin", s.handlePortFwdHairpin)
+	mux.HandleFunc("POST /port-forwards/hairpin/override/add", s.handlePortFwdHairpinOverrideAdd)
+	mux.HandleFunc("POST /port-forwards/hairpin/override/delete", s.handlePortFwdHairpinOverrideDelete)
 	mux.HandleFunc("GET /api/port-forwards", s.handleAPIPortFwdGet)
-	mux.HandleFunc("GET /proxy-manager", s.handleProxyManagerPage)
-	mux.HandleFunc("POST /proxy-manager", s.handleProxyManagerSave)
-	mux.HandleFunc("GET /api/proxy-manager", s.handleAPIProxyManagerGet)
+	// Бывшая страница Nginx Proxy Manager: её правила 80/443 теперь обычные
+	// правила «Проброса портов». Редирект — для старых закладок.
+	mux.Handle("GET /proxy-manager", http.RedirectHandler("/port-forwards", http.StatusMovedPermanently))
 	mux.HandleFunc("GET /mobile-vless", s.handleMobileVlessPage)
 	mux.HandleFunc("POST /mobile-vless/settings", s.handleMobileVlessSettings)
 	mux.HandleFunc("POST /mobile-vless/check", s.handleMobileVlessCheck)
@@ -326,55 +327,6 @@ func (s *Server) handleDomainsSaveRestart(w http.ResponseWriter, r *http.Request
 	sysd.WaitActive(s.Env.SingboxUnit, 15*time.Second)
 	data["Message"] = "Список доменов сохранён, sing-box перезапущен"
 	s.render(w, "domains_inner", data)
-}
-
-type proxyManagerPageData struct {
-	proxymgr.Status
-	Message string
-	Error   string
-}
-
-func (s *Server) proxyManagerData(msg, errMsg string) proxyManagerPageData {
-	d := proxyManagerPageData{Message: msg, Error: errMsg}
-	st, err := proxymgr.GetStatus()
-	if err != nil {
-		if d.Error == "" {
-			d.Error = err.Error()
-		}
-		return d
-	}
-	d.Status = st
-	return d
-}
-
-func (s *Server) handleProxyManagerPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "proxy_manager", s.proxyManagerData("", ""))
-}
-
-func (s *Server) handleProxyManagerSave(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	proxyIP := strings.TrimSpace(r.FormValue("proxy_ip"))
-	if err := proxymgr.Apply(proxyIP); err != nil {
-		s.render(w, "proxy_manager_inner", s.proxyManagerData("", err.Error()))
-		return
-	}
-	msg := "Обвязка выключена: проброс 80/443 и DNS из дома сняты, остальные пробросы не тронуты"
-	if proxyIP != "" {
-		msg = "Готово: с интернета порты 80/443 идут на WAN роутера, из дома DNS ведёт на " + proxyIP
-	}
-	s.render(w, "proxy_manager_inner", s.proxyManagerData(msg, ""))
-}
-
-func (s *Server) handleAPIProxyManagerGet(w http.ResponseWriter, r *http.Request) {
-	st, err := proxymgr.GetStatus()
-	if err != nil {
-		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	s.writeJSON(w, http.StatusOK, st)
 }
 
 type mobileVlessPageData struct {

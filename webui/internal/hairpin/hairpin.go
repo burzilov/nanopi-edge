@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	EnvKey     = "HAIRPIN_DNS_TARGET"
+	EnvKey      = "HAIRPIN_DNS_TARGET"
 	DefaultConf = "/etc/dnsmasq.d/hairpin-alias.conf"
 )
 
@@ -36,9 +36,16 @@ func RefreshScript() string {
 
 // Status для страницы портов.
 type Status struct {
-	Target string   `json:"target"`
-	WanIPs []string `json:"wan_ips"`
-	Active bool     `json:"active"`
+	Target    string          `json:"target"`
+	WanIPs    []string        `json:"wan_ips"`
+	Active    bool            `json:"active"`
+	Overrides []OverrideState `json:"overrides"`
+}
+
+// OverrideState — исключение и признак, что оно уже записано в конфиг dnsmasq.
+type OverrideState struct {
+	Override
+	Applied bool `json:"applied"`
 }
 
 func GetTarget() (string, error) {
@@ -94,32 +101,51 @@ func GetStatus() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	wan := WanIPv4s()
-	active := t != "" && len(wan) > 0
-	if active {
-		if b, err := os.ReadFile(ConfPath()); err == nil {
-			active = strings.Contains(string(b), "alias=") && strings.Contains(string(b), t)
-		}
+	ov, err := LoadOverrides()
+	if err != nil {
+		return Status{}, err
 	}
-	return Status{Target: t, WanIPs: wan, Active: active}, nil
+	wan := WanIPv4s()
+	conf, _ := os.ReadFile(ConfPath())
+	active := t != "" && len(wan) > 0
+	if active && conf != nil {
+		active = strings.Contains(string(conf), "alias=") && strings.Contains(string(conf), t)
+	}
+	st := Status{Target: t, WanIPs: wan, Active: active, Overrides: make([]OverrideState, 0, len(ov))}
+	for _, o := range ov {
+		line := "address=/" + o.Name + "/" + o.IP + "\n"
+		st.Overrides = append(st.Overrides, OverrideState{Override: o, Applied: strings.Contains(string(conf), line)})
+	}
+	return st, nil
+}
+
+// NormalizeTarget проверяет адрес подмены и приводит его к виду a.b.c.d.
+// Пусто — подмена выключена.
+func NormalizeTarget(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	ip := net.ParseIP(s)
+	if ip == nil || ip.To4() == nil || strings.Contains(s, ":") {
+		return "", fmt.Errorf("нужен IPv4-адрес в домашней сети, например 192.168.1.137, или пустое поле — подмена выключена")
+	}
+	ip = ip.To4()
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return "", fmt.Errorf("адрес %s не подходит: нужен обычный адрес устройства в домашней сети", ip)
+	}
+	return ip.String(), nil
 }
 
 func ValidateTarget(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	ip := net.ParseIP(s)
-	if ip == nil || ip.To4() == nil {
-		return fmt.Errorf("нужен IPv4 или пусто")
-	}
-	return nil
+	_, err := NormalizeTarget(s)
+	return err
 }
 
-// Apply сохраняет target в .env, пишет dnsmasq alias, рестартит dnsmasq.
+// Apply сохраняет target в .env и применяет конфиг (Refresh).
 func Apply(target string) error {
-	target = strings.TrimSpace(target)
-	if err := ValidateTarget(target); err != nil {
+	target, err := NormalizeTarget(target)
+	if err != nil {
 		return err
 	}
 	if target == "" {
@@ -131,7 +157,12 @@ func Apply(target string) error {
 			return err
 		}
 	}
-	// Предпочитаем скрипт edge (тот же код, что CLI).
+	return Refresh()
+}
+
+// Refresh перегенерирует hairpin-alias.conf (общая подмена + исключения) и
+// перезапускает dnsmasq. Предпочитаем скрипт edge (тот же код, что CLI).
+func Refresh() error {
 	if scr := RefreshScript(); fileExecutable(scr) {
 		cmd := exec.Command(scr)
 		out, err := cmd.CombinedOutput()
@@ -140,7 +171,18 @@ func Apply(target string) error {
 		}
 		return nil
 	}
-	return applyLocal(target)
+	target, err := GetTarget()
+	if err != nil {
+		return err
+	}
+	if target, err = NormalizeTarget(target); err != nil {
+		return err
+	}
+	ov, err := LoadOverrides()
+	if err != nil {
+		return err
+	}
+	return applyLocal(target, ov)
 }
 
 func fileExecutable(path string) bool {
@@ -151,29 +193,16 @@ func fileExecutable(path string) bool {
 	return !st.IsDir() && st.Mode()&0o111 != 0
 }
 
-func applyLocal(target string) error {
+func applyLocal(target string, ov []Override) error {
 	conf := ConfPath()
 	if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
 		return err
 	}
-	if target == "" {
+	if content := RenderConf(target, WanIPv4s(), ov); content == "" {
 		_ = os.Remove(conf)
 	} else {
-		wan := WanIPv4s()
-		var b strings.Builder
-		b.WriteString("# Managed by nanopi-webui — hairpin DNS\n")
-		b.WriteString("# HAIRPIN_DNS_TARGET=" + target + "\n")
-		if len(wan) == 0 {
-			b.WriteString("# WAN IPv4 пока нет\n")
-		}
-		for _, ip := range wan {
-			if ip == target {
-				continue
-			}
-			b.WriteString("alias=" + ip + "," + target + "\n")
-		}
 		tmp := conf + ".tmp"
-		if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 			return err
 		}
 		if err := os.Rename(tmp, conf); err != nil {

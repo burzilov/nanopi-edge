@@ -14,8 +14,7 @@ import (
 // portRuleView — строка таблицы «Проброс портов».
 type portRuleView struct {
 	portfwd.Rule
-	Managed  bool   // правило Nginx Proxy Manager — только просмотр
-	Hint     string // как пакеты дойдут до назначения
+	Hint     string // предупреждение: адрес вне сети NanoPi
 	HintWarn bool
 	HasStats bool   // счётчики прочитаны из nft
 	Conns    uint64 // новых подключений (первые пакеты через DNAT)
@@ -53,6 +52,22 @@ type rateLimitView struct {
 	BurstStr  string
 }
 
+// hairpinView — блок «DNS hairpin» (HAIRPIN_DNS_TARGET в .env).
+type hairpinView struct {
+	Target   string   // сохранённый адрес подмены
+	Input    string   // значение поля (при ошибке — как ввёл пользователь)
+	Active   bool     // alias записан в конфиг dnsmasq
+	WanIPs   []string // белые IP, которые подменяются
+	ConfPath string
+	Err      string // статус не прочитан
+	// Исключения «имя → адрес» (hairpin-overrides.json).
+	Overrides     []hairpin.OverrideState
+	OverridesPath string
+	MaxOverrides  int
+	OvName        string // форма добавления (при ошибке — как ввёл пользователь)
+	OvIP          string
+}
+
 // portRuleForm — значения формы как ввёл пользователь (для повторного показа при ошибке).
 type portRuleForm struct {
 	ID       string
@@ -67,10 +82,9 @@ type portFwdPageData struct {
 	Rules     []portRuleView
 	RateLimit rateLimitView
 	StatsErr  string // счётчики не прочитаны (нет nft/прав, таблица не загружена)
-	HomeNet   string
-	HomeVia   string
 	LanCIDR   string
 	WanIPs    []string
+	Hairpin   hairpinView
 	EditID    string
 	Form      portRuleForm // форма добавления
 	Edit      portRuleForm // форма редактирования (EditID)
@@ -87,6 +101,7 @@ func (s *Server) portFwdData(msg, errMsg string) portFwdPageData {
 		LanCIDR: portfwd.LanCIDR(),
 		WanIPs:  hairpin.WanIPv4s(),
 	}
+	d.Hairpin = hairpinData(d.WanIPs)
 	st, err := portfwd.Load()
 	if err != nil {
 		if d.Error == "" {
@@ -94,8 +109,6 @@ func (s *Server) portFwdData(msg, errMsg string) portFwdPageData {
 		}
 		return d
 	}
-	d.HomeNet = st.HomeNet
-	d.HomeVia = st.HomeVia
 	rl := st.Limit()
 	d.RateLimit = rateLimitView{
 		RateLimit: rl, Default: st.RateLimit == nil,
@@ -109,8 +122,8 @@ func (s *Server) portFwdData(msg, errMsg string) portFwdPageData {
 		d.RateLimit.Drops, d.RateLimit.HasDrops = c.Packets, true
 	}
 	for _, r := range st.Rules {
-		hint, warn := portfwd.DestHint(st, d.LanCIDR, r.DestIP)
-		v := portRuleView{Rule: r, Managed: portfwd.IsNPM(r), Hint: hint, HintWarn: warn}
+		hint, warn := portfwd.DestHint(d.LanCIDR, r.DestIP)
+		v := portRuleView{Rule: r, Hint: hint, HintWarn: warn}
 		cn, cb := portfwd.CounterNames(r.ID)
 		if c, ok := counters[cn]; ok {
 			v.HasStats, v.Conns = true, c.Packets
@@ -121,6 +134,32 @@ func (s *Server) portFwdData(msg, errMsg string) portFwdPageData {
 		d.Rules = append(d.Rules, v)
 	}
 	return d
+}
+
+// hairpinStatus / applyHairpin — подменяются в тестах.
+var (
+	hairpinStatus      = hairpin.GetStatus
+	applyHairpin       = hairpin.Apply
+	addHairpinOverride = hairpin.AddOverride
+	delHairpinOverride = hairpin.DeleteOverride
+)
+
+func hairpinData(wan []string) hairpinView {
+	v := hairpinView{
+		WanIPs: wan, ConfPath: hairpin.ConfPath(),
+		OverridesPath: hairpin.OverridesPath(), MaxOverrides: hairpin.MaxOverrides,
+	}
+	st, err := hairpinStatus()
+	if err != nil {
+		v.Err = "Не удалось прочитать " + hairpin.EnvKey + ": " + err.Error()
+		return v
+	}
+	v.Target, v.Input, v.Active = st.Target, st.Target, st.Active
+	v.Overrides = st.Overrides
+	if len(st.WanIPs) > 0 {
+		v.WanIPs = st.WanIPs
+	}
+	return v
 }
 
 func ruleToForm(r portfwd.Rule) portRuleForm {
@@ -204,16 +243,12 @@ func (s *Server) handlePortFwdInner(w http.ResponseWriter, r *http.Request) {
 	if id := strings.TrimSpace(r.URL.Query().Get("edit")); id != "" {
 		for _, rv := range d.Rules {
 			if rv.ID == id {
-				if rv.Managed {
-					d.Error = "Это правило управляется страницей «Nginx Proxy Manager»"
-					break
-				}
 				d.EditID = id
 				d.Edit = ruleToForm(rv.Rule)
 				break
 			}
 		}
-		if d.EditID == "" && d.Error == "" {
+		if d.EditID == "" {
 			d.Error = "Правило не найдено — обновите страницу"
 		}
 	}
@@ -270,7 +305,7 @@ func (s *Server) handlePortFwdToggle(w http.ResponseWriter, r *http.Request) {
 	if enable {
 		if st, err := portfwd.Load(); err == nil {
 			for _, rr := range st.Rules {
-				if rr.ID == id && !portfwd.IsNPM(rr) {
+				if rr.ID == id {
 					if err := checkReservedPort(rr); err != nil {
 						s.render(w, "port_forwards_inner", s.portFwdData("", err.Error()))
 						return
@@ -300,27 +335,6 @@ func (s *Server) handlePortFwdDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, "port_forwards_inner", s.portFwdData("Правило удалено", ""))
-}
-
-func (s *Server) handlePortFwdHomeRoute(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	homeNet := strings.TrimSpace(r.FormValue("home_net"))
-	homeVia := strings.TrimSpace(r.FormValue("home_via"))
-	st, err := portfwd.SetHomeRoute(homeNet, homeVia)
-	if err != nil {
-		d := s.portFwdData("", err.Error())
-		d.HomeNet, d.HomeVia = homeNet, homeVia
-		s.render(w, "port_forwards_inner", d)
-		return
-	}
-	msg := "Маршрут в домашнюю сеть снят"
-	if portfwd.HasHomeRoute(st) {
-		msg = "Маршрут сохранён: " + st.HomeNet + " через " + st.HomeVia
-	}
-	s.render(w, "port_forwards_inner", s.portFwdData(msg, ""))
 }
 
 func (s *Server) handlePortFwdRateLimit(w http.ResponseWriter, r *http.Request) {
@@ -360,11 +374,75 @@ func (s *Server) handlePortFwdRateLimit(w http.ResponseWriter, r *http.Request) 
 	s.render(w, "port_forwards_inner", s.portFwdData(msg, ""))
 }
 
+// handlePortFwdHairpin сохраняет HAIRPIN_DNS_TARGET в .env и применяет его
+// (hairpin-dns-refresh: alias в dnsmasq + перезапуск dnsmasq). Пусто или
+// кнопка «Отключить» — подмена выключается.
+func (s *Server) handlePortFwdHairpin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	input := strings.TrimSpace(r.FormValue("target"))
+	if r.FormValue("disable") == "1" {
+		input = ""
+	}
+	target, err := hairpin.NormalizeTarget(input)
+	if err == nil {
+		err = applyHairpin(target)
+		if err != nil {
+			err = fmt.Errorf("DNS hairpin: %w", err)
+		}
+	}
+	if err != nil {
+		d := s.portFwdData("", err.Error())
+		d.Hairpin.Input = input
+		s.render(w, "port_forwards_inner", d)
+		return
+	}
+	msg := "Подмена DNS выключена"
+	if target != "" {
+		msg = "Подмена DNS применена: из дома белый IP ведёт на " + target
+	}
+	s.render(w, "port_forwards_inner", s.portFwdData(msg, ""))
+}
+
+// handlePortFwdHairpinOverrideAdd — исключение «имя → адрес» из общей подмены.
+func (s *Server) handlePortFwdHairpinOverrideAdd(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	ip := strings.TrimSpace(r.FormValue("ip"))
+	o, err := addHairpinOverride(name, ip)
+	if err != nil {
+		d := s.portFwdData("", "Исключение DNS: "+err.Error())
+		d.Hairpin.OvName, d.Hairpin.OvIP = name, ip
+		s.render(w, "port_forwards_inner", d)
+		return
+	}
+	s.render(w, "port_forwards_inner", s.portFwdData("Исключение применено: из дома "+o.Name+" (и поддомены) ведёт на "+o.IP, ""))
+}
+
+func (s *Server) handlePortFwdHairpinOverrideDelete(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if err := delHairpinOverride(name); err != nil {
+		s.render(w, "port_forwards_inner", s.portFwdData("", "Исключение DNS: "+err.Error()))
+		return
+	}
+	s.render(w, "port_forwards_inner", s.portFwdData("Исключение "+name+" удалено", ""))
+}
+
 // portFwdAPI — JSON для /api/port-forwards: правила + действующее ограничение + счётчики.
 type portFwdAPI struct {
 	portfwd.Store
 	Limit    portfwd.RateLimit          `json:"effective_rate_limit"`
 	Counters map[string]portfwd.Counter `json:"counters,omitempty"`
+	Hairpin  *hairpin.Status            `json:"hairpin,omitempty"`
 }
 
 func (s *Server) handleAPIPortFwdGet(w http.ResponseWriter, r *http.Request) {
@@ -374,5 +452,9 @@ func (s *Server) handleAPIPortFwdGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, _ := readCounters()
-	s.writeJSON(w, http.StatusOK, portFwdAPI{Store: st, Limit: st.Limit(), Counters: c})
+	resp := portFwdAPI{Store: st, Limit: st.Limit(), Counters: c}
+	if hs, err := hairpinStatus(); err == nil {
+		resp.Hairpin = &hs
+	}
+	s.writeJSON(w, http.StatusOK, resp)
 }

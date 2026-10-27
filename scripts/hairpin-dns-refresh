@@ -1,15 +1,20 @@
 #!/bin/bash
-# Переписать /etc/dnsmasq.d/hairpin-alias.conf по HAIRPIN_DNS_TARGET + текущим WAN IP.
+# Переписать /etc/dnsmasq.d/hairpin-alias.conf по HAIRPIN_DNS_TARGET + текущим WAN IP
+# и исключениям из /opt/nanopi-edge/hairpin-overrides.json (address=/имя/ip).
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/common.sh"
 nanopi_load_env
 nanopi_write_hairpin_dns_alias
-if [[ -n "${HAIRPIN_DNS_TARGET:-}" ]]; then
+n_over=0
+if [[ -f "$HAIRPIN_DNS_CONF" ]]; then
+  n_over=$(grep -c '^address=/' "$HAIRPIN_DNS_CONF" || true)
+fi
+if [[ -n "${HAIRPIN_DNS_TARGET:-}" || "$n_over" -gt 0 ]]; then
   systemctl restart dnsmasq
-  echo "[ok] hairpin alias → ${HAIRPIN_DNS_TARGET}; dig @10.10.10.1 <домен>"
+  echo "[ok] hairpin alias → ${HAIRPIN_DNS_TARGET:-выкл}; исключений: ${n_over}; dig @10.10.10.1 <домен>"
 else
   systemctl restart dnsmasq 2>/dev/null || true
-  echo "[ok] HAIRPIN_DNS_TARGET пуст — alias удалён"
+  echo "[ok] HAIRPIN_DNS_TARGET пуст, исключений нет — конфиг hairpin удалён"
 fi

@@ -14,19 +14,48 @@ API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-ppp
 DNS — `dns.servers` / `dns.rules`. Перед перезапуском — `sing-box check`.
 
 **Проброс портов:** страница `/port-forwards` — общая таблица правил DNAT
-(вкл/выкл, TCP/UDP/оба, внешний порт → внутренний IP:порт, комментарий), маршрут в
-домашнюю сеть (`home_net`/`home_via`), столбец «Подключений / трафик» из
+(вкл/выкл, TCP/UDP/оба, внешний порт → внутренний IP:порт, комментарий), столбец
+«Подключений / трафик» из
 `nft -j list table inet nanopi_portforward` и ограничение частоты новых соединений
 с одного IP на WAN (по умолчанию 120/мин, запас 240; drop + счётчик, опционально
 лог `nanopi-pf-ratelimit:`). Код — `internal/portfwd`: валидация, рендер nft,
 `nft -c` → атомарная запись → `nft -f` только этой таблицы (без перезапуска
 sing-box/nftables), откат при ошибке. `GET /api/port-forwards` — JSON.
 
-**Nginx Proxy Manager:** страница `/proxy-manager` — IP виртуалки в домашней LAN;
-NanoPi сам ставит DNAT 80/443 (правила с комментарием `nginx-proxy-manager` в той же
-таблице проброса), маршрут за CPE и DNS hairpin. Пустое сохранение снимает только
-это, прочие пробросы остаются.
-На Keenetic: DNS = `10.10.10.1`, МЭ с `10.10.10.0/24` на Nginx Proxy Manager.
+Все порты пробрасываются на домашний роутер (Keenetic) — единственный клиент
+NanoPi в `10.10.10.0/24`; дальше (на NAS и др.) — на самом роутере. Отдельной
+страницы Nginx Proxy Manager нет: правила 80/443 (комментарий `nginx-proxy-manager`)
+— обычные строки таблицы, `/proxy-manager` редиректит на `/port-forwards`. Поля
+`home_net`/`home_via` из старых `port-forwards.json` игнорируются.
+
+Блок **DNS hairpin** на той же странице: адрес `HAIRPIN_DNS_TARGET` (IPv4 в
+домашней сети, например `192.168.1.137`), на который dnsmasq NanoPi подменяет
+белый IP в DNS-ответах (`alias=` в `/etc/dnsmasq.d/hairpin-alias.conf`), чтобы
+домены на белый IP из дома открывались сразу внутри сети, а не по кругу через WAN.
+Адрес действует для имени целиком, на всех портах. У нас это локальный IP Nginx Proxy
+Manager за роутером (сейчас `192.168.1.137`), т.к. имена на :80/:443 должны попадать
+на NPM; то же имя на другом порту (например, DSM :5001) из дома тоже пойдёт на NPM.
+«Сохранить и применить»
+пишет ключ в `/opt/nanopi-edge/.env` и запускает `scripts/hairpin-dns-refresh`
+(перегенерация alias + `systemctl restart dnsmasq`; без скрипта — то же самое из
+панели). Пустое поле или «Отключить» — ключ удаляется, alias снимается. Статус —
+также в `GET /api/port-forwards` (поле `hairpin`). `POST /port-forwards/hairpin`
+(`target=…`, `disable=1`).
+
+**Исключения hairpin** (подблок «Исключения» там же): таблица «Имя → Адрес». Имя и
+все его поддомены из дома резолвятся не в адрес NPM, а в указанный IPv4 — например
+`nas.example.com → 192.168.1.90` (DSM на NAS). Хранение —
+`/opt/nanopi-edge/hairpin-overrides.json` (`{"overrides":[{"name":…,"ip":…}]}`,
+путь переопределяется `HAIRPIN_OVERRIDES`), отдельно от `.env`, поэтому установщик
+его не теряет. В `hairpin-alias.conf` каждое исключение — `address=/имя/адрес`
+перед `alias=`: dnsmasq отвечает на такие имена сам, не спрашивая upstream, так что
+`alias=` их не переписывает; исключения применяются и при пустом
+`HAIRPIN_DNS_TARGET`. Проверка: DNS-имя (ASCII/punycode, без схемы, порта и пути,
+минимум два label, `*.` в начале отбрасывается), IPv4, без дублей, не больше 50.
+Применение — тот же `scripts/hairpin-dns-refresh` (читает JSON через `jq`); при
+ошибке файл откатывается. `POST /port-forwards/hairpin/override/add`
+(`name`, `ip`) и `POST /port-forwards/hairpin/override/delete` (`name`); список —
+в `GET /api/port-forwards` → `hairpin.overrides` (с флагом `applied`).
 
 **Мобильный VLESS:** страница `/mobile-vless` — сначала создание профиля (метка + порт),
 затем маскировочный сайт и включение inbound (TCP/8443). Секреты в

@@ -26,20 +26,14 @@ import (
 )
 
 const (
-	DefaultStorePath     = "/opt/nanopi-edge/port-forwards.json"
-	DefaultNftPath       = "/etc/nftables.d/nanopi-port-forwards.nft"
-	DefaultNftConf       = "/etc/nftables.conf"
-	DefaultEnvPath       = "/opt/nanopi-edge/.env"
-	DefaultHomeRouteUnit = "/etc/systemd/system/nanopi-home-route.service"
-	DefaultLanCIDR       = "10.10.10.0/24"
-	TableName            = "nanopi_portforward"
-	MaxRules             = 64
-	MaxCommentLen        = 120
-
-	// NPMComment — правила 80/443 с этим комментарием принадлежат странице
-	// Nginx Proxy Manager (proxymgr). Общая страница показывает их, но
-	// менять/удалять их нужно там.
-	NPMComment = "nginx-proxy-manager"
+	DefaultStorePath = "/opt/nanopi-edge/port-forwards.json"
+	DefaultNftPath   = "/etc/nftables.d/nanopi-port-forwards.nft"
+	DefaultNftConf   = "/etc/nftables.conf"
+	DefaultEnvPath   = "/opt/nanopi-edge/.env"
+	DefaultLanCIDR   = "10.10.10.0/24"
+	TableName        = "nanopi_portforward"
+	MaxRules         = 64
+	MaxCommentLen    = 120
 )
 
 type Rule struct {
@@ -52,11 +46,10 @@ type Rule struct {
 	Comment  string `json:"comment,omitempty"`
 }
 
-// Store — WAN DNAT + опциональный маршрут/masquerade к LAN за CPE
-// (когда dest вроде 192.168.1.137, а не хост на 10.10.10.0/24).
+// Store — правила WAN DNAT и ограничение частоты.
+// Поля из старых версий (home_net/home_via, маршрут в сеть за роутером)
+// при чтении игнорируются и при следующем сохранении пропадают.
 type Store struct {
-	HomeNet string `json:"home_net,omitempty"` // 192.168.1.0/24
-	HomeVia string `json:"home_via,omitempty"` // 10.10.10.179 — WAN роутера
 	// RateLimit — ограничение новых подключений с одного внешнего IP.
 	// Нет в файле (старый формат) — действуют значения по умолчанию.
 	RateLimit *RateLimit `json:"rate_limit,omitempty"`
@@ -109,11 +102,6 @@ func ValidateRateLimit(rl RateLimit) error {
 		return fmt.Errorf("всплеск (burst): от 1 до %d подключений", MaxRateBurst)
 	}
 	return nil
-}
-
-// IsNPM — правило создано страницей Nginx Proxy Manager.
-func IsNPM(r Rule) bool {
-	return strings.EqualFold(strings.TrimSpace(r.Comment), NPMComment)
 }
 
 // Protos — фактические протоколы правила (both → tcp, udp).
@@ -183,9 +171,6 @@ func StorePath() string   { return envOr("PORTFWD_STORE", DefaultStorePath) }
 func NftPath() string     { return envOr("PORTFWD_NFT", DefaultNftPath) }
 func NftConfPath() string { return envOr("PORTFWD_NFT_CONF", DefaultNftConf) }
 func EnvPath() string     { return envOr("WEBUI_ENV", DefaultEnvPath) }
-func HomeRouteUnitPath() string {
-	return envOr("PORTFWD_HOME_ROUTE_UNIT", DefaultHomeRouteUnit)
-}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -263,27 +248,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 
 // --- валидация ---
 
-func hasHomeRoute(s Store) bool {
-	return strings.TrimSpace(s.HomeNet) != "" || strings.TrimSpace(s.HomeVia) != ""
-}
-
-// HasHomeRoute — задан маршрут в домашнюю сеть за роутером.
-func HasHomeRoute(s Store) bool { return hasHomeRoute(s) }
-
 func ValidateStore(s Store) error {
-	if hasHomeRoute(s) {
-		ip, n, err := net.ParseCIDR(strings.TrimSpace(s.HomeNet))
-		if err != nil || n == nil || ip.To4() == nil {
-			return fmt.Errorf("домашняя сеть: нужен IPv4 CIDR, например 192.168.1.0/24")
-		}
-		via := net.ParseIP(strings.TrimSpace(s.HomeVia))
-		if via == nil || via.To4() == nil {
-			return fmt.Errorf("WAN роутера: нужен IPv4-адрес, например 10.10.10.179")
-		}
-		if n.Contains(via) {
-			return fmt.Errorf("WAN роутера %s не может быть внутри домашней сети %s", via, n)
-		}
-	}
 	if s.RateLimit != nil {
 		if err := ValidateRateLimit(*s.RateLimit); err != nil {
 			return err
@@ -471,22 +436,19 @@ func LanCIDR() string {
 	return DefaultLanCIDR
 }
 
-// DestHint — подсказка, как пакеты дойдут до адреса назначения.
-// warn=true — скорее всего не дойдут без доп. настройки.
-func DestHint(s Store, lanCIDR, destIP string) (hint string, warn bool) {
+// DestHint — предупреждение, если адрес назначения вне сети NanoPi:
+// за NanoPi только домашний роутер, другие сети отсюда недоступны.
+// Для адресов в сети NanoPi подсказки нет.
+func DestHint(lanCIDR, destIP string) (hint string, warn bool) {
 	ip := net.ParseIP(strings.TrimSpace(destIP))
 	if ip == nil {
 		return "", false
 	}
-	if _, n, err := net.ParseCIDR(lanCIDR); err == nil && n.Contains(ip) {
-		return "в сети NanoPi", false
+	_, n, err := net.ParseCIDR(lanCIDR)
+	if err != nil || n.Contains(ip) {
+		return "", false
 	}
-	if hasHomeRoute(s) {
-		if _, n, err := net.ParseCIDR(strings.TrimSpace(s.HomeNet)); err == nil && n.Contains(ip) {
-			return "домашняя сеть через " + strings.TrimSpace(s.HomeVia), false
-		}
-	}
-	return "адрес вне сети NanoPi " + lanCIDR + " и без маршрута — задайте «Маршрут в домашнюю сеть» ниже", true
+	return "адрес вне сети NanoPi " + lanCIDR + ": укажите WAN-адрес роутера, а дальше пробросьте порт на самом роутере", true
 }
 
 // --- nft ---
@@ -502,9 +464,8 @@ func DestHint(s Store, lanCIDR, destIP string) (hint string, warn bool) {
 //     только проброшенные порты — лимит на внешний IP, превышение в drop;
 //   - chain prerouting (nat): DNAT, счётчик = новые подключения
 //     (nat-цепочку проходит только первый пакет соединения);
-//   - chain forward (filter): трафик проброшенных соединений в обе стороны;
-//   - chain postrouting (nat): masquerade в домашнюю сеть за роутером.
-func RenderNft(s Store, wanIfaces []string, lanIF string) string {
+//   - chain forward (filter): трафик проброшенных соединений в обе стороны.
+func RenderNft(s Store, wanIfaces []string) string {
 	var b strings.Builder
 	b.WriteString("# Managed by nanopi-webui — port forwards (do not edit)\n")
 	b.WriteString("# Применяется отдельно: nft -f этот_файл (меняет только эту таблицу).\n")
@@ -599,16 +560,6 @@ func RenderNft(s Store, wanIfaces []string, lanIF string) string {
 		b.WriteString("\t}\n")
 	}
 
-	// SNAT к LAN за CPE — чтобы ответы из домашней сети шли обратно через NanoPi.
-	if hasHomeRoute(s) && lanIF != "" {
-		b.WriteString("\tchain postrouting {\n")
-		b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
-		fmt.Fprintf(&b,
-			"\t\toifname %s ip daddr %s masquerade\n",
-			strconv.Quote(lanIF), strings.TrimSpace(s.HomeNet),
-		)
-		b.WriteString("\t}\n")
-	}
 	b.WriteString("}\n")
 	return b.String()
 }
@@ -721,64 +672,11 @@ func nftErr(op string, out []byte, err error) error {
 	return fmt.Errorf("%s: %w\n%s", op, err, msg)
 }
 
-// --- маршрут в домашнюю сеть ---
-
-func homeRouteUnitBody(netCIDR, via, lan string) string {
-	return fmt.Sprintf(`[Unit]
-Description=NanoPi route to home LAN behind CPE
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/sbin/ip route replace %s via %s dev %s
-
-[Install]
-WantedBy=multi-user.target
-`, netCIDR, via, lan)
-}
-
-// syncHomeRoute приводит маршрут и unit к new; снимает старый маршрут, если он изменился.
-func syncHomeRoute(old, cur Store) error {
-	lan := LanInterface()
-	unit := HomeRouteUnitPath()
-	oldNet, oldVia := strings.TrimSpace(old.HomeNet), strings.TrimSpace(old.HomeVia)
-	newNet, newVia := strings.TrimSpace(cur.HomeNet), strings.TrimSpace(cur.HomeVia)
-
-	if hasHomeRoute(old) && (oldNet != newNet || oldVia != newVia) && oldNet != "" {
-		_, _ = runCmd("ip", "route", "del", oldNet, "via", oldVia, "dev", lan)
-	}
-	if !hasHomeRoute(cur) {
-		if _, err := os.Stat(unit); err == nil {
-			_, _ = runCmd("systemctl", "disable", "nanopi-home-route.service")
-			_ = os.Remove(unit)
-			_, _ = runCmd("systemctl", "daemon-reload")
-		}
-		return nil
-	}
-	if out, err := runCmd("ip", "route", "replace", newNet, "via", newVia, "dev", lan); err != nil {
-		return fmt.Errorf("маршрут %s via %s: %w (%s)", newNet, newVia, err, strings.TrimSpace(string(out)))
-	}
-	body := homeRouteUnitBody(newNet, newVia, lan)
-	if prev, err := os.ReadFile(unit); err == nil && string(prev) == body {
-		return nil
-	}
-	if err := atomicWrite(unit, []byte(body), 0o644); err != nil {
-		return err
-	}
-	_, _ = runCmd("systemctl", "daemon-reload")
-	if out, err := runCmd("systemctl", "enable", "nanopi-home-route.service"); err != nil {
-		return fmt.Errorf("enable nanopi-home-route: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
 // --- применение ---
 
 // commit проверяет новое состояние в nft, сохраняет его и атомарно
 // загружает только таблицу проброса. При ошибке загрузки откатывает файлы.
-func commit(old, cur Store) error {
+func commit(cur Store) error {
 	if cur.Rules == nil {
 		cur.Rules = []Rule{}
 	}
@@ -786,7 +684,7 @@ func commit(old, cur Store) error {
 		return err
 	}
 	nftPath := NftPath()
-	content := RenderNft(cur, WanInterfaces(), LanInterface())
+	content := RenderNft(cur, WanInterfaces())
 	if err := os.MkdirAll(filepath.Dir(nftPath), 0o755); err != nil {
 		return err
 	}
@@ -833,16 +731,9 @@ func commit(old, cur Store) error {
 		rollback()
 		return err
 	}
-	// 3. Маршрут до LAN за CPE (до DNAT, чтобы пакеты сразу знали путь).
-	if err := syncHomeRoute(old, cur); err != nil {
-		rollback()
-		_ = syncHomeRoute(cur, old)
-		return err
-	}
-	// 4. Атомарно заменить только таблицу проброса.
+	// 3. Атомарно заменить только таблицу проброса.
 	if out, err := runCmd("nft", "-f", nftPath); err != nil {
 		rollback()
-		_ = syncHomeRoute(cur, old)
 		return nftErr("nft -f "+nftPath, out, err)
 	}
 	return nil
@@ -870,7 +761,7 @@ func Mutate(fn func(s *Store) error) (Store, error) {
 	if err := fn(&cur); err != nil {
 		return old, err
 	}
-	if err := commit(old, cur); err != nil {
+	if err := commit(cur); err != nil {
 		return old, err
 	}
 	return cur, nil
@@ -891,42 +782,6 @@ func Apply(s Store, _ bool) error {
 	return err
 }
 
-// SetHomeRoute обновляет маршрут к LAN за CPE и применяет.
-// Пустые оба поля — маршрут снять.
-func SetHomeRoute(homeNet, homeVia string) (Store, error) {
-	homeNet = strings.TrimSpace(homeNet)
-	homeVia = strings.TrimSpace(homeVia)
-	if (homeNet == "") != (homeVia == "") {
-		return Store{}, fmt.Errorf("заполните оба поля — домашнюю сеть и WAN роутера — или очистите оба, чтобы снять маршрут")
-	}
-	return Mutate(func(s *Store) error {
-		if homeNet == "" && homeVia == "" {
-			s.HomeNet, s.HomeVia = "", ""
-			return nil
-		}
-		ip, n, err := net.ParseCIDR(homeNet)
-		if err != nil || ip.To4() == nil {
-			return fmt.Errorf("домашняя сеть: нужен IPv4 CIDR, например 192.168.1.0/24")
-		}
-		via := net.ParseIP(homeVia)
-		if via == nil || via.To4() == nil {
-			return fmt.Errorf("WAN роутера: нужен IPv4-адрес, например 10.10.10.179")
-		}
-		lan := LanCIDR()
-		if _, ln, err := net.ParseCIDR(lan); err == nil {
-			if !ln.Contains(via) {
-				return fmt.Errorf("WAN роутера %s должен быть в сети NanoPi %s", via, lan)
-			}
-			if ln.Contains(n.IP) || n.Contains(ln.IP) {
-				return fmt.Errorf("домашняя сеть %s пересекается с сетью NanoPi %s", n, lan)
-			}
-		}
-		s.HomeNet = n.String()
-		s.HomeVia = via.To4().String()
-		return nil
-	})
-}
-
 func findRule(s *Store, id string) (int, error) {
 	id = strings.TrimSpace(id)
 	for i := range s.Rules {
@@ -937,26 +792,12 @@ func findRule(s *Store, id string) (int, error) {
 	return -1, fmt.Errorf("правило не найдено — обновите страницу")
 }
 
-func errManaged(r Rule) error {
-	return fmt.Errorf("правило %s управляется страницей «Nginx Proxy Manager» — меняйте его там", r.Describe())
-}
-
-func checkUserComment(r Rule) error {
-	if IsNPM(r) {
-		return fmt.Errorf("комментарий «%s» зарезервирован для страницы Nginx Proxy Manager", NPMComment)
-	}
-	return nil
-}
-
 // Add добавляет включённое правило.
 func Add(r Rule) (Store, error) {
 	r.ID = ""
 	r = NormalizeRule(r)
 	r.Enabled = true
 	if err := ValidateRule(r); err != nil {
-		return Store{}, err
-	}
-	if err := checkUserComment(r); err != nil {
 		return Store{}, err
 	}
 	return Mutate(func(s *Store) error {
@@ -974,16 +815,10 @@ func Update(r Rule) (Store, error) {
 	if err := ValidateRule(r); err != nil {
 		return Store{}, err
 	}
-	if err := checkUserComment(r); err != nil {
-		return Store{}, err
-	}
 	return Mutate(func(s *Store) error {
 		i, err := findRule(s, r.ID)
 		if err != nil {
 			return err
-		}
-		if IsNPM(s.Rules[i]) {
-			return errManaged(s.Rules[i])
 		}
 		r.Enabled = s.Rules[i].Enabled
 		s.Rules[i] = r
@@ -997,9 +832,6 @@ func Delete(id string) (Store, error) {
 		if err != nil {
 			return err
 		}
-		if IsNPM(s.Rules[i]) {
-			return errManaged(s.Rules[i])
-		}
 		s.Rules = append(s.Rules[:i], s.Rules[i+1:]...)
 		return nil
 	})
@@ -1010,9 +842,6 @@ func SetEnabled(id string, enabled bool) (Store, error) {
 		i, err := findRule(s, id)
 		if err != nil {
 			return err
-		}
-		if IsNPM(s.Rules[i]) {
-			return errManaged(s.Rules[i])
 		}
 		s.Rules[i].Enabled = enabled
 		return nil
@@ -1046,7 +875,7 @@ func Reconcile() (changed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	want := RenderNft(s, WanInterfaces(), LanInterface())
+	want := RenderNft(s, WanInterfaces())
 	if cur, err := os.ReadFile(NftPath()); err == nil && string(cur) == want {
 		return false, nil
 	}

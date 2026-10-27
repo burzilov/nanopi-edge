@@ -44,7 +44,7 @@ func TestRenderNft(t *testing.T) {
 		{ID: "2", Enabled: false, Proto: "udp", WanPort: 53, DestIP: "10.10.10.53", DestPort: 53},
 		{ID: "3", Enabled: true, Proto: "both", WanPort: 51820, DestIP: "10.10.10.2", DestPort: 51820},
 	}}
-	out := RenderNft(s, []string{"end0", "ppp0"}, "enp1s0")
+	out := RenderNft(s, []string{"end0", "ppp0"})
 	if !strings.Contains(out, `iifname { "end0", "ppp0" } tcp dport 443 counter name "pf_1_new" dnat ip to 10.10.10.50:443 # nginx-proxy-manager`) {
 		t.Fatalf("missing tcp 443 rule:\n%s", out)
 	}
@@ -54,25 +54,8 @@ func TestRenderNft(t *testing.T) {
 	if !strings.Contains(out, "tcp dport 51820") || !strings.Contains(out, "udp dport 51820") {
 		t.Fatalf("both should emit tcp+udp:\n%s", out)
 	}
-	if strings.Contains(out, "masquerade") {
-		t.Fatal("no home route → no masquerade")
-	}
-}
-
-func TestRenderNftHomeRoute(t *testing.T) {
-	s := Store{
-		HomeNet: "192.168.1.0/24",
-		HomeVia: "10.10.10.179",
-		Rules: []Rule{
-			{ID: "1", Enabled: true, Proto: "tcp", WanPort: 443, DestIP: "192.168.1.137", DestPort: 443},
-		},
-	}
-	out := RenderNft(s, []string{"end0"}, "enp1s0")
-	if strings.Contains(out, `ip daddr {`) {
-		t.Fatalf("LAN white-IP DNAT must be gone:\n%s", out)
-	}
-	if !strings.Contains(out, `oifname "enp1s0" ip daddr 192.168.1.0/24 masquerade`) {
-		t.Fatalf("missing masquerade for home LAN:\n%s", out)
+	if strings.Contains(out, "masquerade") || strings.Contains(out, "postrouting") {
+		t.Fatal("port forwards must not render masquerade/postrouting")
 	}
 }
 
@@ -156,7 +139,6 @@ func setupEnv(t *testing.T, storeJSON string) (*fakeExec, string) {
 	t.Setenv("PORTFWD_STORE", filepath.Join(dir, "port-forwards.json"))
 	t.Setenv("PORTFWD_NFT", filepath.Join(dir, "nftables.d", "nanopi-port-forwards.nft"))
 	t.Setenv("PORTFWD_NFT_CONF", filepath.Join(dir, "nftables.conf"))
-	t.Setenv("PORTFWD_HOME_ROUTE_UNIT", filepath.Join(dir, "nanopi-home-route.service"))
 	t.Setenv("WEBUI_ENV", filepath.Join(dir, ".env"))
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("WAN_IF=end0\nLAN_IF=enp1s0\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -193,13 +175,13 @@ func TestBoardStoreCompat(t *testing.T) {
 	if err := ValidateStore(s); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Rules) != 3 || !IsNPM(s.Rules[0]) || !IsNPM(s.Rules[1]) || IsNPM(s.Rules[2]) {
+	if len(s.Rules) != 3 || s.Rules[0].Comment != "nginx-proxy-manager" || s.Rules[2].Comment != "dsm-nas" {
 		t.Fatalf("unexpected rules: %+v", s.Rules)
 	}
 	if s.RateLimit != nil || !s.Limit().Enabled || s.Limit().PerMinute != DefaultRatePerMinute {
 		t.Fatalf("old file must get default rate limit: %+v", s.Limit())
 	}
-	out := RenderNft(s, WanInterfaces(), LanInterface())
+	out := RenderNft(s, WanInterfaces())
 	for _, want := range []string{
 		`tcp dport 80 counter name "pf_5f1c2a90_new" dnat ip to 10.10.10.179:80`,
 		`tcp dport 443 counter name "pf_77ab01cd_new" dnat ip to 10.10.10.179:443`,
@@ -221,7 +203,7 @@ func TestBoardStoreCompat(t *testing.T) {
 }
 
 func TestRenderNftAtomicPrefix(t *testing.T) {
-	out := RenderNft(Store{}, nil, "enp1s0")
+	out := RenderNft(Store{}, nil)
 	i1 := strings.Index(out, "add table inet nanopi_portforward\n")
 	i2 := strings.Index(out, "delete table inet nanopi_portforward\n")
 	i3 := strings.Index(out, "table inet nanopi_portforward {")
@@ -242,7 +224,7 @@ func TestRenderNftRateLimit(t *testing.T) {
 		{ID: "b", Enabled: true, Proto: "tcp", WanPort: 443, DestIP: "10.10.10.179", DestPort: 443},
 		{ID: "c", Enabled: false, Proto: "tcp", WanPort: 22, DestIP: "10.10.10.5", DestPort: 22},
 	}}
-	out := RenderNft(s, []string{"end0", "ppp0"}, "enp1s0")
+	out := RenderNft(s, []string{"end0", "ppp0"})
 	for _, want := range []string{
 		`counter pf_ratelimit_drop {`,
 		`flags dynamic,timeout`,
@@ -267,12 +249,12 @@ func TestRenderNftRateLimit(t *testing.T) {
 		}
 	}
 	s.RateLimit = &RateLimit{Enabled: true, PerMinute: 60, Burst: 100, Log: false}
-	out = RenderNft(s, []string{"end0"}, "enp1s0")
+	out = RenderNft(s, []string{"end0"})
 	if !strings.Contains(out, "limit rate over 60/minute burst 100 packets") || strings.Contains(out, "log prefix") {
 		t.Fatalf("custom limit not rendered:\n%s", out)
 	}
 	s.RateLimit.Enabled = false
-	out = RenderNft(s, []string{"end0"}, "enp1s0")
+	out = RenderNft(s, []string{"end0"})
 	if strings.Contains(out, "ratelimit") {
 		t.Fatalf("disabled limit must not render:\n%s", out)
 	}
@@ -389,23 +371,49 @@ func TestMutateAddUpdateToggleDelete(t *testing.T) {
 	}
 }
 
-func TestManagedRulesProtected(t *testing.T) {
+// Правила бывшей страницы NPM (комментарий nginx-proxy-manager) — обычные
+// правила: их можно менять, выключать и удалять, комментарий не зарезервирован.
+func TestFormerNPMRulesEditable(t *testing.T) {
 	setupEnv(t, boardJSON)
-	if _, err := Delete("5f1c2a90"); err == nil {
-		t.Fatal("NPM rule must not be deletable from general page")
-	}
-	if _, err := SetEnabled("77ab01cd", false); err == nil {
-		t.Fatal("NPM rule must not be toggled from general page")
-	}
-	if _, err := Update(Rule{ID: "5f1c2a90", Proto: "tcp", WanPort: 8080, DestIP: "10.10.10.179", DestPort: 80}); err == nil {
-		t.Fatal("NPM rule must not be edited from general page")
-	}
-	if _, err := Add(Rule{Proto: "tcp", WanPort: 8443, DestIP: "10.10.10.5", DestPort: 8443, Comment: "nginx-proxy-manager"}); err == nil {
-		t.Fatal("reserved comment")
-	}
-	// Mutate (для proxymgr) может менять что угодно.
-	if _, err := Mutate(func(s *Store) error { s.Rules[0].DestIP = "10.10.10.180"; return nil }); err != nil {
+	if _, err := Update(Rule{ID: "5f1c2a90", Proto: "tcp", WanPort: 8080, DestIP: "10.10.10.179", DestPort: 80, Comment: "nginx-proxy-manager"}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := SetEnabled("77ab01cd", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Add(Rule{Proto: "tcp", WanPort: 8444, DestIP: "10.10.10.179", DestPort: 8444, Comment: "nginx-proxy-manager"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Delete("5f1c2a90")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Rules) != 3 || st.Rules[0].ID != "77ab01cd" || st.Rules[0].Enabled {
+		t.Fatalf("%+v", st.Rules)
+	}
+}
+
+// Старый port-forwards.json с полями маршрута в домашнюю сеть читается,
+// поля игнорируются: в nft нет masquerade, при сохранении поля пропадают.
+func TestLegacyHomeRouteFieldsIgnored(t *testing.T) {
+	legacy := `{"home_net": "192.168.1.0/24", "home_via": "10.10.10.179", "rules": [
+    {"id": "0d9e3b11", "enabled": true, "proto": "tcp", "wan_port": 5001, "dest_ip": "10.10.10.179", "dest_port": 5001, "comment": "dsm-nas"}
+  ]}`
+	_, dir := setupEnv(t, legacy)
+	s, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := RenderNft(s, WanInterfaces())
+	if strings.Contains(out, "masquerade") || !strings.Contains(out, "dnat ip to 10.10.10.179:5001") {
+		t.Fatalf("%s", out)
+	}
+	if _, err := Reapply(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "port-forwards.json"))
+	if strings.Contains(string(b), "home_") || !strings.Contains(string(b), "dsm-nas") {
+		t.Fatalf("%s", b)
 	}
 }
 
@@ -439,71 +447,12 @@ func TestCommitRollbackOnApplyError(t *testing.T) {
 	}
 }
 
-func TestHomeRouteLifecycle(t *testing.T) {
-	f, dir := setupEnv(t, boardJSON)
-	unit := filepath.Join(dir, "nanopi-home-route.service")
-	if _, err := SetHomeRoute("192.168.1.0/24", ""); err == nil {
-		t.Fatal("half-filled form must fail")
-	}
-	if _, err := SetHomeRoute("10.10.10.0/25", "10.10.10.179"); err == nil {
-		t.Fatal("overlap with NanoPi LAN must fail")
-	}
-	if _, err := SetHomeRoute("192.168.1.0/24", "172.16.0.1"); err == nil {
-		t.Fatal("via outside NanoPi LAN must fail")
-	}
-	st, err := SetHomeRoute("192.168.1.77/24", "10.10.10.179")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.HomeNet != "192.168.1.0/24" || len(st.Rules) != 3 {
-		t.Fatalf("normalize/keep rules: %+v", st)
-	}
-	if !f.has("ip route replace 192.168.1.0/24 via 10.10.10.179 dev enp1s0") || !f.has("systemctl enable nanopi-home-route.service") {
-		t.Fatalf("route not applied: %v", f.calls)
-	}
-	if b, _ := os.ReadFile(unit); !strings.Contains(string(b), "ip route replace 192.168.1.0/24 via 10.10.10.179 dev enp1s0") {
-		t.Fatalf("unit: %s", b)
-	}
-	// Повторное сохранение без изменений не трогает unit/systemd.
-	f.calls = nil
-	if _, err := Reapply(); err != nil {
-		t.Fatal(err)
-	}
-	if f.has("systemctl") || f.has("ip route del") {
-		t.Fatalf("no-op must not touch systemd: %v", f.calls)
-	}
-	// Смена сети — старый маршрут снимается.
-	f.calls = nil
-	if _, err := SetHomeRoute("192.168.2.0/24", "10.10.10.179"); err != nil {
-		t.Fatal(err)
-	}
-	if !f.has("ip route del 192.168.1.0/24 via 10.10.10.179 dev enp1s0") {
-		t.Fatalf("old route not removed: %v", f.calls)
-	}
-	// Снятие.
-	f.calls = nil
-	st, err = SetHomeRoute("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if HasHomeRoute(st) || !f.has("ip route del 192.168.2.0/24") || !f.has("systemctl disable") {
-		t.Fatalf("route not cleared: %v", f.calls)
-	}
-	if _, err := os.Stat(unit); !os.IsNotExist(err) {
-		t.Fatal("unit must be removed")
-	}
-}
-
 func TestDestHint(t *testing.T) {
-	s := Store{HomeNet: "192.168.1.0/24", HomeVia: "10.10.10.179"}
-	if h, w := DestHint(s, "10.10.10.0/24", "10.10.10.179"); w || h == "" {
-		t.Fatal(h)
+	if h, w := DestHint("10.10.10.0/24", "10.10.10.179"); w || h != "" {
+		t.Fatalf("LAN address needs no hint: %q", h)
 	}
-	if h, w := DestHint(s, "10.10.10.0/24", "192.168.1.5"); w || !strings.Contains(h, "10.10.10.179") {
-		t.Fatal(h)
-	}
-	if _, w := DestHint(s, "10.10.10.0/24", "172.16.0.5"); !w {
-		t.Fatal("expected warning")
+	if h, w := DestHint("10.10.10.0/24", "192.168.1.5"); !w || !strings.Contains(h, "роутер") {
+		t.Fatalf("expected warning: %q", h)
 	}
 }
 

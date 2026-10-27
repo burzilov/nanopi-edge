@@ -41,7 +41,8 @@ IPv6 в первой итерации, раздача белого IP роуте
 ```
 
 Локальные подмены (hairpin для Nginx Proxy Manager) по-прежнему в **dnsmasq**
-(`hairpin-alias.conf`), до форварда в sing-box.
+(`hairpin-alias.conf`), до форварда в sing-box: общий `alias=` (белый IP → NPM) и
+исключения `address=/имя/адрес` (имя и поддомены → свой адрес, например NAS).
 
 Upstream и failover правятся в `/etc/sing-box/config.json` (панель **Конфиг** или
 вручную) → `sing-box check` → перезапуск sing-box; dnsmasq перезапустится сам
@@ -82,6 +83,7 @@ bash install-singbox.sh
 
 ```text
 /opt/nanopi-edge/.env
+/opt/nanopi-edge/hairpin-overrides.json   # если заданы исключения hairpin (webui)
 /opt/nanopi-edge/scripts/{router-on,lab-on,wan-dhcp,wan-pppoe,wan-status,proxy-select,hairpin-dns-refresh,inbound-status,common.sh}
 /opt/nanopi-edge/templates/
 /etc/sing-box/config.json
@@ -132,8 +134,10 @@ bash install-webui.sh
 `nft -c` до применения; при ошибке старые файлы возвращаются. После перезагрузки
 правила поднимаются через `include` в `/etc/nftables.conf`.
 
-- Внутренний IP — в LAN NanoPi или в домашней сети за роутером
-  (блок «Маршрут в домашнюю сеть»: `home_net` + `home_via`, маршрут и masquerade).
+- Внутренний IP — WAN-адрес домашнего роутера (Keenetic): он единственный клиент
+  NanoPi в `10.10.10.0/24`, других устройств за NanoPi нет. Дальше (на NAS и т.п.)
+  порты пробрасываются на самом роутере. Поля `home_net`/`home_via` старых версий
+  игнорируются (маршрута и masquerade в домашнюю сеть больше нет).
 - Столбец **«Подключений / трафик»** — nft-счётчики правила (новые соединения
   в DNAT и байты обоих направлений в forward); обнуляются при каждом применении.
 - **Ограничение частоты подключений** с WAN: новые соединения с одного IP на все
@@ -146,11 +150,19 @@ bash install-webui.sh
   (обновление формата, смена WAN-интерфейса).
 - `GET /api/port-forwards` — правила, действующий лимит и счётчики.
 
-Проброс 80/443 на Nginx Proxy Manager — страница **Nginx Proxy Manager** в панели:
-один IP виртуалки, роутер определяется сам. Её правила (комментарий
-`nginx-proxy-manager`) видны в общей таблице только для чтения; пустое поле снимает
-проброс 80/443, маршрут и DNS alias, остальные пробросы остаются.
-На Keenetic: DNS клиентов = `10.10.10.1` и МЭ WAN→Nginx Proxy Manager 80/443.
+Проброс 80/443 на Nginx Proxy Manager — обычные правила на странице **Проброс
+портов** (на роутер; комментарий `nginx-proxy-manager` остался от прежней страницы
+`/proxy-manager`, которая теперь редиректит сюда), а с роутера — на NPM.
+DNS hairpin (`HAIRPIN_DNS_TARGET` в `.env`, ставится `install-singbox.sh`) работает
+как раньше; адрес подмены меняется или отключается в блоке **DNS hairpin** на
+странице **Проброс портов** (сохраняет `.env` и запускает `hairpin-dns-refresh`). На Keenetic: DNS клиентов = `10.10.10.1`.
+Там же — **исключения** «имя → адрес»: имя и его поддомены из дома ведут не на NPM,
+а на указанный IPv4 (например `nas.example.org → 192.168.1.90`, чтобы DSM :5001
+открывался на NAS). Хранятся в `/opt/nanopi-edge/hairpin-overrides.json` (не в
+`.env`, переживают переустановку), до 50 штук, в dnsmasq — строки
+`address=/имя/адрес`, которые срабатывают раньше `alias=` и работают даже при
+выключенной общей подмене. Нужны webui и скрипты одной версии: старый
+`hairpin-dns-refresh` исключений не знает, панель покажет «не применено».
 
 ### Мобильный VLESS (Hiddify)
 
@@ -191,7 +203,7 @@ upgrade; старый дубль `/etc/sysctl.d/98-nanopi-conntrack.conf` уда
 его значения уже есть в 99-м.
 
 Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE,
-`HAIRPIN_DNS_TARGET`, `inbound-vless-reality.json`) в git **не** хранятся.
+`HAIRPIN_DNS_TARGET`, `hairpin-overrides.json`, `inbound-vless-reality.json`) в git **не** хранятся.
 
 ## Управление на хосте
 
