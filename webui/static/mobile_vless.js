@@ -19,7 +19,7 @@
     var text = ta.value || "";
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(function () {
-        if (window.nanopiToast) window.nanopiToast("URI скопирован");
+        if (window.nanopiToast) window.nanopiToast.show("URI скопирован");
       }).catch(function () {
         ta.select();
         document.execCommand("copy");

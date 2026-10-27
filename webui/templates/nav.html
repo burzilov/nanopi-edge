@@ -1,13 +1,10 @@
 {{define "nav"}}
 <header class="top">
-  <form class="hdr-restart"
-        hx-post="/sing-box/restart"
-        hx-target="#toast-host"
-        hx-swap="innerHTML"
-        hx-on::after-request="var s=document.getElementById('status'); if(s) htmx.trigger(s,'load')">
-    <button type="submit" class="danger" title="Кратко оборвёт TUN — интернет моргнёт">Перезапустить sing-box</button>
-  </form>
-  <nav>
+  <a class="brand" href="/" title="NanoPi edge — статус">
+    <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg></span>
+    <span class="brand-text">NanoPi edge</span>
+  </a>
+  <nav aria-label="Разделы панели">
     <a href="/">Статус</a>
     <a href="/logs">Логи</a>
     <a href="/domains">Домены</a>
@@ -15,8 +12,22 @@
     <a href="/port-forwards">Проброс портов</a>
     <a href="/config">Конфиг</a>
   </nav>
-  <div class="hdr-version">
-    <span class="ver-label" title="Версия панели">{{AppVersion}}</span>
+  <div class="hdr-tools">
+    <div class="hdr-version">
+      <span class="ver-label" title="Версия панели">{{AppVersion}}</span>
+    </div>
+    <button type="button" class="secondary theme-toggle" title="Тема оформления" aria-label="Тема оформления">
+      <svg class="ti ti-auto" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg>
+      <svg class="ti ti-light" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="ti ti-dark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <form class="hdr-restart"
+          hx-post="/sing-box/restart"
+          hx-target="#toast-host"
+          hx-swap="innerHTML"
+          hx-on::after-request="var s=document.getElementById('status'); if(s) htmx.trigger(s,'load')">
+      <button type="submit" class="danger" title="Кратко оборвёт TUN — интернет моргнёт">Перезапустить sing-box</button>
+    </form>
   </div>
 </header>
 <div id="toast-host" class="toast-host" aria-live="polite"></div>
@@ -49,9 +60,10 @@
     </p>
   </div>
 </div>
-<script src="/static/nav.js" defer></script>
-<script src="/static/toast.js" defer></script>
-<script src="/static/updates.js" defer></script>
+<script src="/static/nav.js?v={{AppVersion}}" defer></script>
+<script src="/static/theme.js?v={{AppVersion}}" defer></script>
+<script src="/static/toast.js?v={{AppVersion}}" defer></script>
+<script src="/static/updates.js?v={{AppVersion}}" defer></script>
 {{end}}
 
 {{define "partials/flash"}}

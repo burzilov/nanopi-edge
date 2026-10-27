@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Логи — NanoPi</title>
-  <link rel="stylesheet" href="/static/app.css">
+{{template "head"}}
   <script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
@@ -22,7 +22,7 @@
         не трогает.</p>
       {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
       <div id="log-view" class="logs">{{.LogsHTML}}</div>
-      <script src="/static/logs.js"></script>
+      <script src="/static/logs.js?v={{AppVersion}}"></script>
     </section>
   </main>
 </body>
