@@ -11,6 +11,9 @@
 # Репозиторий: WEBUI_GITHUB_REPO из окружения или /opt/nanopi-edge/.env
 # (пишет install-singbox.sh).
 #
+# После установки EDGE_VERSION в .env выставляется равным тегу поставленного
+# релиза (не понижается, остальные строки .env не трогаются).
+#
 set -euo pipefail
 
 OPT_ROOT=/opt/nanopi-edge
@@ -23,6 +26,7 @@ WEBUI_VERSION="${WEBUI_VERSION:-}"
 ASSET_NAME=nanopi-webui-linux-arm64.tar.gz
 NONINTERACTIVE=0
 _WEBUI_INSTALL_TMP=
+WEBUI_TAG=            # фактический тег скачанного релиза (download_release)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -86,8 +90,74 @@ download_release() {
     || die "в release ${tag} нет ассета ${ASSET_NAME}"
 
   info "Release ${tag}"
+  WEBUI_TAG="$tag"
   curl -fsSL -o "$tmp/$ASSET_NAME" "$download_url"
   printf '%s\n' "$tag" > "$tmp/TAG"
+}
+
+# 0, если тег $1 строго меньше $2 (vX.Y.Z, сравнение sort -V).
+semver_lt() {
+  local a="${1#v}" b="${2#v}"
+  [[ "$a" != "$b" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)" == "$a" ]]
+}
+
+# Идемпотентно выставить KEY=VAL в dotenv-файле:
+#  - существующая строка KEY= заменяется на месте (дубли удаляются),
+#    иначе строка дописывается в конец;
+#  - остальные строки и их порядок не меняются;
+#  - перевод строки в конце файла гарантируется (в т.ч. если его не было);
+#  - запись через `cat >` в тот же файл — права/владелец/inode сохраняются;
+#  - если содержимое не изменилось, файл не перезаписывается.
+env_file_set_kv() {
+  local file="$1" key="$2" val="$3" tmp
+  val=${val//$'\n'/}
+  tmp=$(mktemp)
+  if ! K="$key" V="$val" awk '
+    BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; done = 0 }
+    {
+      l = $0
+      sub(/^[ \t]+/, "", l)
+      if (index(l, k "=") == 1) {
+        if (!done) { print k "=" v; done = 1 }
+        next
+      }
+      print
+    }
+    END { if (!done) print k "=" v }
+  ' "$file" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! cmp -s "$tmp" "$file"; then
+    cat "$tmp" >"$file"
+  fi
+  rm -f "$tmp"
+}
+
+# EDGE_VERSION в .env = тег ставящегося релиза (монорепо: один тег на панель
+# и edge-скрипты). Метку не понижаем: если в .env уже более новая версия
+# (например, отдельно поставили старую панель), оставляем её.
+# install-singbox.sh пишет EDGE_VERSION только когда его передали явно, поэтому
+# при обновлении edge → webui (WebUI «Обновить», CI) оба пишут один и тот же тег.
+sync_edge_version() {
+  local tag="$1" cur=""
+  [[ -n "$tag" && -f "$OPT_ENV" ]] || return 0
+  if [[ ! "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    echo "    WARN: тег '${tag}' не похож на vX.Y.Z — EDGE_VERSION не трогаю"
+    return 0
+  fi
+  cur=$(sed -n 's/^[[:space:]]*EDGE_VERSION=//p' "$OPT_ENV" | head -1 | tr -d "\"'[:space:]")
+  if [[ "$cur" == "$tag" ]]; then
+    ok "EDGE_VERSION=${tag} (без изменений)"
+    return 0
+  fi
+  if [[ "$cur" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]] && semver_lt "$tag" "$cur"; then
+    ok "EDGE_VERSION=${cur} новее ${tag} — не понижаю"
+    return 0
+  fi
+  env_file_set_kv "$OPT_ENV" EDGE_VERSION "$tag"
+  ok "EDGE_VERSION: ${cur:-<нет>} → ${tag}"
 }
 
 install_from_archive() {
@@ -144,6 +214,10 @@ EOF
   if [[ -n "${WEBUI_GITHUB_REPO:-}" && -f "$OPT_ENV" ]] && ! grep -q '^WEBUI_GITHUB_REPO=' "$OPT_ENV"; then
     printf '\nWEBUI_GITHUB_REPO=%s\n' "$WEBUI_GITHUB_REPO" >> "$OPT_ENV"
   fi
+
+  # Метка версии edge в .env — до restart (воркер apply может умереть вместе с панелью).
+  sync_edge_version "${WEBUI_TAG:-${WEBUI_VERSION:-}}" \
+    || echo "    WARN: не удалось записать EDGE_VERSION в ${OPT_ENV}"
 
   # До restart: зафиксировать apply=ok. Иначе при KillMode=cgroup воркер
   # (--apply-update / setsid) может умереть вместе с панелью, а UI навсегда
@@ -250,4 +324,5 @@ EOF
   trap - EXIT
 }
 
-main "$@"
+# INSTALL_WEBUI_LIB_ONLY=1 — только подключить функции (тесты), без main.
+[[ -n "${INSTALL_WEBUI_LIB_ONLY:-}" ]] || main "$@"

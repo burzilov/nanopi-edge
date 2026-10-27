@@ -115,6 +115,12 @@ bash install-webui.sh
 WEBUI_VERSION=v0.0.2 bash install-webui.sh --noninteractive
 ```
 
+После установки `install-webui.sh` выставляет `EDGE_VERSION` в
+`/opt/nanopi-edge/.env` равным тегу поставленного релиза: строка заменяется
+на месте или дописывается, остальные переменные, порядок строк и права файла
+не меняются. Метка не понижается — если в `.env` уже версия новее (поставили
+старую панель отдельно), она остаётся. Проверка: `bash tests/install-webui-env.test.sh`.
+
 В панели на статусе: «Проверить обновления» → при наличии релиза — «Обновить»
 (скачивает `install-singbox.sh` и `install-webui.sh` из ассетов; edge-установщик
 подтягивает `nanopi-edge-scripts.tar.gz` с того же тега; запускает

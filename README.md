@@ -118,6 +118,9 @@ ssh root@10.10.10.1
 bash install-webui.sh
 ```
 
+Установщик панели заодно выставляет в `.env` метку `EDGE_VERSION` = тег
+поставленного релиза (не понижает её и не трогает остальные переменные).
+
 Панель: `http://10.10.10.1/` (без auth — доверяй только LAN).
 На статусе — переключатель WAN DHCP|PPPoE, креды, VLAN; пароль ISP в
 `/etc/ppp/nanopi-wan.secret` (0600). В шапке — версия и «Обновления».
@@ -190,6 +193,7 @@ DNS hairpin (`HAIRPIN_DNS_TARGET` в `.env`, ставится `install-singbox.s
 | `templates/`         | Шаблоны (dnsmasq, netplan, sing-box.config.json.tpl, …) |
 | `lab/`               | Fake ISP/CPE и чеклист PPPoE-стенда                  |
 | `install-webui.sh`   | Установка панели с GitHub Release                    |
+| `tests/`             | Shell-тесты установщиков (`bash tests/*.test.sh`)     |
 | `release.sh`         | Patch-релиз: `VERSION` ↑, commit, tag, push          |
 | `webui/`             | Исходники панели (Go)                                |
 | `.github/workflows/` | Сборка артефактов на тег `v*` (webui, scripts, установщики) |
