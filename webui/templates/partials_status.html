@@ -1,12 +1,12 @@
 {{define "partials/status"}}
-<div class="card">
+<div class="card status-card">
   <div class="card-head">
     <h2 class="card-title">Прокси (sing-box)</h2>
     <span class="pill {{if eq .Active "работает"}}ok{{else}}bad{{end}}">{{.Active}}</span>
   </div>
-  <dl class="kv">
+  <dl class="kv board">
+    <div class="board-main"><dt>Текущий сервер</dt><dd class="board-figure">{{if .Proxy}}{{.Proxy}}{{else}}—{{end}}</dd></div>
     <div><dt>Время работы</dt><dd class="num">{{.Uptime}}</dd></div>
-    <div><dt>Текущий сервер</dt><dd>{{if .Proxy}}<code>{{.Proxy}}</code>{{else}}—{{end}}</dd></div>
   </dl>
   <div class="field-grid">
     <label class="vless-pick">VPN-сервер (VLESS)

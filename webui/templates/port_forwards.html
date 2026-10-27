@@ -214,10 +214,10 @@
         <button type="submit">Применить</button>
       </div>
     </form>
-    <p class="hint ports-hairpin-meta">
-      {{if .RateLimit.Default}}значения по умолчанию{{else}}свои значения{{end}}
-      {{if .RateLimit.HasDrops}} · отброшено подключений: <b>{{.RateLimit.Drops}}</b>{{end}}
-      {{if .RateLimit.Log}} · в журнале: <code>journalctl -k | grep nanopi-pf-ratelimit</code>{{end}}
+    <p class="hint ports-hairpin-meta meta-line">
+      <span class="meta-item">{{if .RateLimit.Default}}значения по умолчанию{{else}}свои значения{{end}}</span>
+      {{if .RateLimit.HasDrops}}<span class="meta-item">отброшено подключений: <b>{{.RateLimit.Drops}}</b></span>{{end}}
+      {{if .RateLimit.Log}}<span class="meta-item">в журнале: <code>journalctl -k | grep nanopi-pf-ratelimit</code></span>{{end}}
     </p>
   </div>
 
@@ -257,10 +257,10 @@
         {{end}}
       </div>
     </form>
-    <p class="hint ports-hairpin-meta">
+    <p class="hint ports-hairpin-meta meta-line">
       {{if .Hairpin.Err}}{{.Hairpin.Err}}{{else}}
-      {{if .Hairpin.WanIPs}}белый IP {{range $i, $ip := .Hairpin.WanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{if .Hairpin.Target}} → <code>{{.Hairpin.Target}}</code>{{end}}{{else}}белый IP на WAN не найден{{end}}
-      · <code>HAIRPIN_DNS_TARGET</code> в <code>.env</code>, alias в <code>{{.Hairpin.ConfPath}}</code>
+      <span class="meta-item">{{if .Hairpin.WanIPs}}белый IP {{range $i, $ip := .Hairpin.WanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{if .Hairpin.Target}} → <code>{{.Hairpin.Target}}</code>{{end}}{{else}}белый IP на WAN не найден{{end}}</span>
+      <span class="meta-item"><code>HAIRPIN_DNS_TARGET</code> в <code>.env</code>, alias в <code>{{.Hairpin.ConfPath}}</code></span>
       {{end}}
     </p>
   </div>

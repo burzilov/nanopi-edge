@@ -3,8 +3,9 @@
      тема берётся из системной (prefers-color-scheme) и не сохраняется. */}}
 {{define "head"}}
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
-  <script>(function(){var t=null;try{t=localStorage.getItem("nanopi-theme");}catch(e){}if(t!=="light"&&t!=="dark"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);})();</script>
+  <meta name="description" content="Панель управления шлюзом NanoPi edge: прокси sing-box, WAN, домены, проброс портов.">
+  <meta name="theme-color" content="#eef1f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0f15" media="(prefers-color-scheme: dark)">
+  <script>(function(){var t=null;try{t=localStorage.getItem("nanopi-theme");}catch(e){}if(t!=="light"&&t!=="dark"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);document.documentElement.classList.add("js");})();</script>
   <link rel="stylesheet" href="/static/app.css?v={{AppVersion}}">
 {{end}}

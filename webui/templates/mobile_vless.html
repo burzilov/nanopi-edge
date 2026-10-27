@@ -38,8 +38,8 @@
         <dt>Состояние</dt>
         <dd>
           {{if .Enabled}}<span class="pill ok">включён</span>{{else}}<span class="pill">выкл</span>{{end}}
-          {{if .HasProfile}} · профиль есть{{else}} · профиля нет{{end}}
-          {{if .InboundPresent}} · inbound в config{{else}}{{if .Enabled}} · <span class="pill">нет в config</span>{{end}}{{end}}
+          <span class="meta-item">{{if .HasProfile}}профиль есть{{else}}профиля нет{{end}}</span>
+          {{if .InboundPresent}}<span class="meta-item">inbound в config</span>{{else}}{{if .Enabled}}<span class="pill">нет в config</span>{{end}}{{end}}
         </dd>
       </div>
       <div>
@@ -47,7 +47,7 @@
         <dd>
           <code>0.0.0.0:{{.Port}}</code>
           {{if .ListenOK}}<span class="pill ok">слушает</span>{{else}}<span class="pill">не слушает</span>{{end}}
-          · sing-box {{if .ServiceActive}}<span class="pill ok">active</span>{{else}}<span class="pill">не active</span>{{end}}
+          <span class="meta-item">sing-box</span> {{if .ServiceActive}}<span class="pill ok">active</span>{{else}}<span class="pill">не active</span>{{end}}
         </dd>
       </div>
       <div>
@@ -60,7 +60,7 @@
       </div>
       <div>
         <dt>Профиль</dt>
-        <dd>{{if .HasProfile}}{{if .Label}}<code>{{.Label}}</code>{{else}}без метки{{end}}{{if .CreatedAt}} · {{.CreatedAt}}{{end}}{{else}}—{{end}}</dd>
+        <dd>{{if .HasProfile}}{{if .Label}}<code>{{.Label}}</code>{{else}}без метки{{end}}{{if .CreatedAt}} <span class="meta-item num">{{.CreatedAt}}</span>{{end}}{{else}}—{{end}}</dd>
       </div>
       <div>
         <dt>Шаг</dt>
@@ -109,8 +109,8 @@
     <h2 class="card-title">Шаг 2. Маскировочный TLS-сайт</h2>
     <p class="hint">Это не адрес Hiddify, а сайт для Reality handshake / SNI.
       Endpoint телефона — WAN IP NanoPi и порт из шага 1.</p>
-    <p class="hint">Профиль: <code>{{if .Label}}{{.Label}}{{else}}mobile{{end}}</code>
-      · порт <code>{{.Port}}</code></p>
+    <p class="hint">Профиль: <code>{{if .Label}}{{.Label}}{{else}}mobile{{end}}</code>,
+      порт <code>{{.Port}}</code></p>
     <form class="ports-form" id="mv-settings"
           hx-post="/mobile-vless/settings"
           hx-target="#mobile-vless-main"
