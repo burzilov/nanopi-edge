@@ -70,6 +70,11 @@
         </dd>
       </div>
     </dl>
+    {{if .Rules}}
+    <p class="hint ports-hairpin-meta">Правила в общем списке
+      <a href="/port-forwards">«Проброс портов»</a>:
+      {{range $i, $r := .Rules}}{{if $i}}, {{end}}<code>{{$r.ProtoLabel}} {{$r.WanPort}} → {{$r.DestIP}}:{{$r.DestPort}}</code>{{if not $r.Enabled}} (выкл){{end}}{{end}}</p>
+    {{end}}
     {{if .Hint}}<p class="hint ports-hairpin-meta">{{.Hint}}</p>{{end}}
   </div>
 </section>

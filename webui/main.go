@@ -11,6 +11,7 @@ import (
 
 	"nanopi-webui/internal/clash"
 	"nanopi-webui/internal/config"
+	"nanopi-webui/internal/portfwd"
 	"nanopi-webui/internal/update"
 	"nanopi-webui/internal/web"
 )
@@ -62,6 +63,14 @@ func main() {
 	}
 
 	update.ClearStaleRunning()
+
+	// Новый формат nft-файла проброса (счётчики, ограничение частоты) и смена
+	// WAN-интерфейса применяются сами при старте панели, только таблица проброса.
+	if changed, err := portfwd.Reconcile(); err != nil {
+		log.Printf("port-forwards: не удалось применить правила при старте: %v", err)
+	} else if changed {
+		log.Printf("port-forwards: nft-правила проброса обновлены по port-forwards.json")
+	}
 
 	addr := env.Listen
 	log.Printf("nanopi-webui %s listening on http://%s/", Version, addr)

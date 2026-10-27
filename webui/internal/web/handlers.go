@@ -56,6 +56,15 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /logs/stream", s.handleLogsStream)
 	mux.HandleFunc("GET /domains", s.handleDomainsPage)
 	mux.HandleFunc("POST /domains/save-restart", s.handleDomainsSaveRestart)
+	mux.HandleFunc("GET /port-forwards", s.handlePortFwdPage)
+	mux.HandleFunc("GET /port-forwards/inner", s.handlePortFwdInner)
+	mux.HandleFunc("POST /port-forwards/add", s.handlePortFwdAdd)
+	mux.HandleFunc("POST /port-forwards/update", s.handlePortFwdUpdate)
+	mux.HandleFunc("POST /port-forwards/toggle", s.handlePortFwdToggle)
+	mux.HandleFunc("POST /port-forwards/delete", s.handlePortFwdDelete)
+	mux.HandleFunc("POST /port-forwards/home-route", s.handlePortFwdHomeRoute)
+	mux.HandleFunc("POST /port-forwards/rate-limit", s.handlePortFwdRateLimit)
+	mux.HandleFunc("GET /api/port-forwards", s.handleAPIPortFwdGet)
 	mux.HandleFunc("GET /proxy-manager", s.handleProxyManagerPage)
 	mux.HandleFunc("POST /proxy-manager", s.handleProxyManagerSave)
 	mux.HandleFunc("GET /api/proxy-manager", s.handleAPIProxyManagerGet)
@@ -352,7 +361,7 @@ func (s *Server) handleProxyManagerSave(w http.ResponseWriter, r *http.Request) 
 		s.render(w, "proxy_manager_inner", s.proxyManagerData("", err.Error()))
 		return
 	}
-	msg := "Обвязка выключена: проброс с интернета и DNS из дома сняты"
+	msg := "Обвязка выключена: проброс 80/443 и DNS из дома сняты, остальные пробросы не тронуты"
 	if proxyIP != "" {
 		msg = "Готово: с интернета порты 80/443 идут на WAN роутера, из дома DNS ведёт на " + proxyIP
 	}

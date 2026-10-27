@@ -16,7 +16,7 @@ import (
 
 const (
 	DefaultConfigPath = "/opt/nanopi-edge/proxy-manager.json"
-	ruleComment       = "nginx-proxy-manager"
+	ruleComment       = portfwd.NPMComment
 )
 
 // Config — единственная ручная настройка: IP Nginx Proxy Manager в домашней LAN.
@@ -78,6 +78,8 @@ type Status struct {
 	HairpinOn bool
 	WhiteIPs  []string
 	Hint      string
+	// Rules — правила проброса NPM из общего списка (port-forwards.json).
+	Rules []portfwd.Rule
 }
 
 func GetStatus() (Status, error) {
@@ -107,6 +109,15 @@ func GetStatus() (Status, error) {
 		if netCIDR, err := homeNetCIDR(c.ProxyIP); err == nil {
 			st.HomeNet = netCIDR
 		}
+	}
+	if pf, err := portfwd.Load(); err == nil {
+		st.Rules = NPMRules(pf.Rules)
+		if st.Enabled && len(st.Rules) > 0 {
+			st.ForwardIP = st.Rules[0].DestIP
+		}
+	}
+	if st.Enabled && len(st.Rules) < len(Ports) {
+		st.Hint = strings.TrimSpace(st.Hint + " Правил проброса 80/443 для Nginx Proxy Manager нет в списке — нажмите «Сохранить», чтобы восстановить их.")
 	}
 	if st.Enabled && st.RouterIP == "" {
 		st.Hint = "Не удалось найти домашний роутер в сети 10.10.10.0/24. Проверьте, что кабель идёт с LAN NanoPi на WAN роутера и роутер включён."
@@ -149,19 +160,12 @@ func Apply(proxyIP string) error {
 
 	// Dest = WAN роутера: на Keenetic уже есть (или нужен) проброс на Nginx Proxy Manager.
 	// Прямой DNAT на 192.168.1.x ломает внешний доступ без отдельного МЭ под public src.
-	s := portfwd.Store{
-		Rules: []portfwd.Rule{
-			portfwd.NormalizeRule(portfwd.Rule{
-				Proto: "tcp", WanPort: 80, DestIP: router, DestPort: 80, Comment: ruleComment,
-			}),
-			portfwd.NormalizeRule(portfwd.Rule{
-				Proto: "tcp", WanPort: 443, DestIP: router, DestPort: 443, Comment: ruleComment,
-			}),
-		},
-	}
-	s.Rules[0].Enabled = true
-	s.Rules[1].Enabled = true
-	if err := portfwd.Apply(s, true); err != nil {
+	// Меняем только свои правила (комментарий nginx-proxy-manager), остальные
+	// правила общей страницы «Проброс портов» сохраняются.
+	if _, err := portfwd.Mutate(func(s *portfwd.Store) error {
+		s.Rules = WithNPMRules(s.Rules, router)
+		return nil
+	}); err != nil {
 		return err
 	}
 	if err := hairpin.Apply(proxyIP); err != nil {
@@ -170,9 +174,77 @@ func Apply(proxyIP string) error {
 	return save(Config{ProxyIP: proxyIP, RouterIP: router})
 }
 
-// Disable снимает DNAT, маршрут и DNS alias.
+// Ports — порты, которые пробрасывает шаблон Nginx Proxy Manager.
+var Ports = []int{80, 443}
+
+// WithNPMRules — правила NPM (TCP 80/443 → router) поверх общих правил.
+// Существующие NPM-правила обновляются на месте (id и порядок сохраняются),
+// лишние NPM-правила убираются, чужие правила не трогаются.
+func WithNPMRules(rules []portfwd.Rule, router string) []portfwd.Rule {
+	want := map[int]bool{}
+	for _, p := range Ports {
+		want[p] = true
+	}
+	done := map[int]bool{}
+	out := make([]portfwd.Rule, 0, len(rules)+len(Ports))
+	for _, r := range rules {
+		if !portfwd.IsNPM(r) {
+			out = append(out, r)
+			continue
+		}
+		if !want[r.WanPort] || done[r.WanPort] {
+			continue
+		}
+		r.Proto = "tcp"
+		r.DestIP = router
+		r.DestPort = r.WanPort
+		r.Comment = ruleComment
+		r.Enabled = true
+		done[r.WanPort] = true
+		out = append(out, portfwd.NormalizeRule(r))
+	}
+	for _, p := range Ports {
+		if done[p] {
+			continue
+		}
+		r := portfwd.NormalizeRule(portfwd.Rule{
+			Proto: "tcp", WanPort: p, DestIP: router, DestPort: p, Comment: ruleComment,
+		})
+		r.Enabled = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// WithoutNPMRules — общие правила без правил Nginx Proxy Manager.
+func WithoutNPMRules(rules []portfwd.Rule) []portfwd.Rule {
+	out := make([]portfwd.Rule, 0, len(rules))
+	for _, r := range rules {
+		if !portfwd.IsNPM(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// NPMRules — правила, принадлежащие Nginx Proxy Manager.
+func NPMRules(rules []portfwd.Rule) []portfwd.Rule {
+	var out []portfwd.Rule
+	for _, r := range rules {
+		if portfwd.IsNPM(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Disable снимает правила NPM (80/443) и DNS alias. Остальные пробросы
+// и маршрут в домашнюю сеть остаются.
 func Disable() error {
-	if err := portfwd.Apply(portfwd.Store{Rules: []portfwd.Rule{}}, true); err != nil {
+	if _, err := portfwd.Mutate(func(s *portfwd.Store) error {
+		s.Rules = WithoutNPMRules(s.Rules)
+		return nil
+	}); err != nil {
 		return err
 	}
 	if err := hairpin.Apply(""); err != nil {

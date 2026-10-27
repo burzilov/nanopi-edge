@@ -1,0 +1,245 @@
+{{define "port_forwards"}}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проброс портов — NanoPi edge</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{template "nav" .}}
+  <main id="port-forwards-main">
+    {{template "port_forwards_inner" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "port_forwards_inner"}}
+<section>
+  <h1>Проброс портов</h1>
+  <p class="hint">Входящие подключения из интернета на внешний порт NanoPi
+    (WAN{{if .WanIPs}}: {{range $i, $ip := .WanIPs}}{{if $i}}, {{end}}<code>{{$ip}}</code>{{end}}{{end}})
+    перенаправляются на внутренний адрес. Обычно это хост в сети NanoPi
+    {{if .LanCIDR}}<code>{{.LanCIDR}}</code>{{end}}, например WAN домашнего роутера.
+    Изменения применяются сразу. Перезапуска sing-box нет, текущие подключения не рвутся.</p>
+  <p class="hint">Правила <span class="pill muted">NPM</span> (порты 80 и 443) создаёт страница
+    <a href="/proxy-manager">Nginx Proxy Manager</a>, там же они меняются.</p>
+
+  <div class="card ports-card">
+    <h2 class="card-title">Правила</h2>
+    {{if .Rules}}
+    <div class="ports-table-wrap">
+      <table class="ports-table">
+        <thead>
+          <tr>
+            <th>Вкл</th>
+            <th>Протокол</th>
+            <th>Внешний порт</th>
+            <th>Внутренний IP</th>
+            <th>Внутренний порт</th>
+            <th>Комментарий</th>
+            <th title="Новых подключений и трафик в обе стороны с последнего применения правил или загрузки">Подключений / трафик</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+        {{$edit := .EditID}}{{$ef := .Edit}}
+        {{range .Rules}}
+          {{if and $edit (eq .ID $edit)}}
+          <tr>
+            <td colspan="8">
+              <form class="ports-form"
+                    hx-post="/port-forwards/update"
+                    hx-target="#port-forwards-main"
+                    hx-swap="innerHTML">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <div class="row">
+                  <label>Протокол
+                    <select name="proto">
+                      <option value="tcp" {{if eq $ef.Proto "tcp"}}selected{{end}}>TCP</option>
+                      <option value="udp" {{if eq $ef.Proto "udp"}}selected{{end}}>UDP</option>
+                      <option value="both" {{if eq $ef.Proto "both"}}selected{{end}}>TCP+UDP</option>
+                    </select>
+                  </label>
+                  <label class="ports-port">Внешний порт
+                    <input name="wan_port" type="number" min="1" max="65535" required value="{{$ef.WanPort}}">
+                  </label>
+                  <label class="grow">Внутренний IP
+                    <input name="dest_ip" type="text" required value="{{$ef.DestIP}}" placeholder="10.10.10.179" autocomplete="off">
+                  </label>
+                  <label class="ports-port">Внутренний порт
+                    <input name="dest_port" type="number" min="1" max="65535" value="{{$ef.DestPort}}" placeholder="как внешний">
+                  </label>
+                </div>
+                <div class="row">
+                  <label class="grow">Комментарий
+                    <input name="comment" type="text" maxlength="120" value="{{$ef.Comment}}" autocomplete="off">
+                  </label>
+                  <div class="ports-add-actions">
+                    <button type="submit">Сохранить и применить</button>
+                    <button type="button" class="secondary"
+                            hx-get="/port-forwards/inner"
+                            hx-target="#port-forwards-main"
+                            hx-swap="innerHTML">Отмена</button>
+                  </div>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr class="{{if not .Enabled}}ports-off{{end}}">
+            <td>
+              {{if .Managed}}
+                {{if .Enabled}}✓{{else}}—{{end}}
+              {{else}}
+              <form class="inline"
+                    hx-post="/port-forwards/toggle"
+                    hx-target="#port-forwards-main"
+                    hx-swap="innerHTML">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <input type="hidden" name="enabled" value="{{if .Enabled}}0{{else}}1{{end}}">
+                <button type="submit" class="secondary ports-toggle"
+                        title="{{if .Enabled}}Выключить{{else}}Включить{{end}}">{{if .Enabled}}✓{{else}}—{{end}}</button>
+              </form>
+              {{end}}
+            </td>
+            <td>{{.ProtoLabel}}</td>
+            <td><code>{{.WanPort}}</code></td>
+            <td><code>{{.DestIP}}</code>
+              {{if .Hint}}<div class="hint {{if .HintWarn}}warn-hint{{end}}">{{.Hint}}</div>{{end}}
+            </td>
+            <td><code>{{.DestPort}}</code></td>
+            <td class="ports-comment">
+              {{if .Managed}}<span class="pill muted">NPM</span>{{else}}{{.Comment}}{{end}}
+            </td>
+            <td>{{if and .Enabled .HasStats}}{{.ConnsLabel}} / {{.TrafficLabel}}{{else}}—{{end}}</td>
+            <td>
+              {{if .Managed}}
+                <a href="/proxy-manager">настроить</a>
+              {{else}}
+              <button type="button" class="secondary"
+                      hx-get="/port-forwards/inner?edit={{.ID}}"
+                      hx-target="#port-forwards-main"
+                      hx-swap="innerHTML">Изменить</button>
+              <form class="inline"
+                    hx-post="/port-forwards/delete"
+                    hx-target="#port-forwards-main"
+                    hx-swap="innerHTML"
+                    hx-confirm="Удалить проброс {{.ProtoLabel}} {{.WanPort}} → {{.DestIP}}:{{.DestPort}}?">
+                <input type="hidden" name="id" value="{{.ID}}">
+                <button type="submit" class="danger">Удалить</button>
+              </form>
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{if .StatsErr}}<p class="hint ports-hairpin-meta">{{.StatsErr}}</p>{{end}}
+    {{else}}
+    <p class="hint">Правил пока нет.</p>
+    {{end}}
+  </div>
+
+  <div class="card ports-card">
+    <h2 class="card-title">Добавить правило</h2>
+    <form class="ports-form"
+          hx-post="/port-forwards/add"
+          hx-target="#port-forwards-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label>Протокол
+          <select name="proto">
+            <option value="tcp" {{if eq .Form.Proto "tcp"}}selected{{end}}>TCP</option>
+            <option value="udp" {{if eq .Form.Proto "udp"}}selected{{end}}>UDP</option>
+            <option value="both" {{if eq .Form.Proto "both"}}selected{{end}}>TCP+UDP</option>
+          </select>
+        </label>
+        <label class="ports-port">Внешний порт
+          <input name="wan_port" type="number" min="1" max="65535" required value="{{.Form.WanPort}}" placeholder="5001">
+        </label>
+        <label class="grow">Внутренний IP
+          <input name="dest_ip" type="text" required value="{{.Form.DestIP}}" placeholder="10.10.10.179" autocomplete="off">
+        </label>
+        <label class="ports-port">Внутренний порт
+          <input name="dest_port" type="number" min="1" max="65535" value="{{.Form.DestPort}}" placeholder="как внешний">
+        </label>
+      </div>
+      <div class="row">
+        <label class="grow">Комментарий
+          <input name="comment" type="text" maxlength="120" value="{{.Form.Comment}}" placeholder="например, dsm-nas" autocomplete="off">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Добавить и применить</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="card ports-card">
+    <h2 class="card-title">Ограничение частоты подключений</h2>
+    <p class="hint">Защита от перебора паролей и сканеров. С одного внешнего IP принимается
+      не больше заданного числа <b>новых</b> подключений в минуту на все проброшенные порты
+      вместе. Сверх лимита подключения отбрасываются. Уже открытые соединения и трафик
+      из домашней сети не ограничиваются. Synology Photos/Drive открывают много
+      соединений сразу, поэтому значения по умолчанию взяты с запасом.</p>
+    <form class="ports-form"
+          hx-post="/port-forwards/rate-limit"
+          hx-target="#port-forwards-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label><input type="checkbox" name="enabled" value="1" {{if .RateLimit.Enabled}}checked{{end}}> Включено</label>
+        <label><input type="checkbox" name="log" value="1" {{if .RateLimit.Log}}checked{{end}}> Писать в журнал (не чаще 6 записей в минуту)</label>
+      </div>
+      <div class="row">
+        <label class="ports-port">Новых в минуту
+          <input name="per_minute" type="number" min="10" max="100000" required value="{{.RateLimit.PerMinStr}}">
+        </label>
+        <label class="ports-port">Всплеск
+          <input name="burst" type="number" min="1" max="100000" required value="{{.RateLimit.BurstStr}}">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Применить</button>
+        </div>
+      </div>
+    </form>
+    <p class="hint ports-hairpin-meta">
+      {{if .RateLimit.Enabled}}<span class="pill ok">включено</span>{{else}}<span class="pill">выключено</span>{{end}}
+      {{if .RateLimit.Default}} · значения по умолчанию{{end}}
+      {{if .RateLimit.HasDrops}} · отброшено подключений: <b>{{.RateLimit.Drops}}</b>{{end}}
+      {{if .RateLimit.Log}} · в журнале: <code>journalctl -k | grep nanopi-pf-ratelimit</code>{{end}}
+    </p>
+  </div>
+
+  <div class="card ports-card">
+    <h2 class="card-title">Маршрут в домашнюю сеть за роутером</h2>
+    <p class="hint">Нужен, только если внутренний IP находится в сети за домашним роутером
+      (например <code>192.168.1.50</code>), а не в сети NanoPi. NanoPi добавит маршрут в эту сеть через
+      WAN роутера и подменит адрес отправителя (masquerade), чтобы ответы шли обратно через NanoPi.
+      На роутере при этом должен быть разрешён доступ из его WAN в домашнюю сеть.
+      Чтобы снять маршрут, очистите оба поля.</p>
+    <form class="ports-form"
+          hx-post="/port-forwards/home-route"
+          hx-target="#port-forwards-main"
+          hx-swap="innerHTML">
+      <div class="row">
+        <label class="grow">Домашняя сеть
+          <input name="home_net" type="text" value="{{.HomeNet}}" placeholder="192.168.1.0/24" autocomplete="off">
+        </label>
+        <label class="grow">WAN роутера
+          <input name="home_via" type="text" value="{{.HomeVia}}" placeholder="10.10.10.179" autocomplete="off">
+        </label>
+        <div class="ports-add-actions">
+          <button type="submit">Сохранить маршрут</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</section>
+{{template "oob/toast" .}}
+{{end}}

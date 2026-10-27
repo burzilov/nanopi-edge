@@ -1,4 +1,7 @@
 # Managed by nanopi-webui — port forwards (do not edit)
+# Применяется отдельно: nft -f этот_файл (меняет только эту таблицу).
+add table inet nanopi_portforward
+delete table inet nanopi_portforward
 table inet nanopi_portforward {
 	chain prerouting {
 		type nat hook prerouting priority dstnat; policy accept;

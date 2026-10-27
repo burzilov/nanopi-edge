@@ -120,8 +120,36 @@ bash install-webui.sh
 На статусе — переключатель WAN DHCP|PPPoE, креды, VLAN; пароль ISP в
 `/etc/ppp/nanopi-wan.secret` (0600). В шапке — версия и «Обновления».
 
+### Проброс портов
+
+Страница панели **Проброс портов** (`/port-forwards`): таблица правил
+вкл/выкл · протокол TCP/UDP/оба · внешний порт · внутренний IP · внутренний порт ·
+комментарий; добавление, правка, выключение, удаление. Хранится в
+`/opt/nanopi-edge/port-forwards.json` (формат прежний, новые поля опциональны),
+применяется в `/etc/nftables.d/nanopi-port-forwards.nft` — это отдельная таблица
+`inet nanopi_portforward`, которую `nft -f` пересоздаёт атомарно (`add`/`delete table`
+в начале файла). Остальной ruleset и sing-box **не** перезапускаются, проверка
+`nft -c` до применения; при ошибке старые файлы возвращаются. После перезагрузки
+правила поднимаются через `include` в `/etc/nftables.conf`.
+
+- Внутренний IP — в LAN NanoPi или в домашней сети за роутером
+  (блок «Маршрут в домашнюю сеть»: `home_net` + `home_via`, маршрут и masquerade).
+- Столбец **«Подключений / трафик»** — nft-счётчики правила (новые соединения
+  в DNAT и байты обоих направлений в forward); обнуляются при каждом применении.
+- **Ограничение частоты подключений** с WAN: новые соединения с одного IP на все
+  проброшенные порты, по умолчанию 120/мин с запасом 240 (с запасом под Synology
+  Photos/Drive и CGNAT). Лишние отбрасываются и считаются (`pf_ratelimit_drop`),
+  опционально пишутся в журнал с префиксом `nanopi-pf-ratelimit:` (не чаще 6/мин):
+  `journalctl -k | grep nanopi-pf-ratelimit`. Действует только на WAN-интерфейсах,
+  LAN и hairpin не трогает.
+- При старте панель сама переписывает nft-файл, если он не совпадает с JSON
+  (обновление формата, смена WAN-интерфейса).
+- `GET /api/port-forwards` — правила, действующий лимит и счётчики.
+
 Проброс 80/443 на Nginx Proxy Manager — страница **Nginx Proxy Manager** в панели:
-один IP виртуалки, роутер определяется сам. Пустое поле снимает проброс, маршрут и DNS alias.
+один IP виртуалки, роутер определяется сам. Её правила (комментарий
+`nginx-proxy-manager`) видны в общей таблице только для чтения; пустое поле снимает
+проброс 80/443, маршрут и DNS alias, остальные пробросы остаются.
 На Keenetic: DNS клиентов = `10.10.10.1` и МЭ WAN→Nginx Proxy Manager 80/443.
 
 ### Мобильный VLESS (Hiddify)
@@ -154,6 +182,13 @@ bash install-webui.sh
 | `webui/`             | Исходники панели (Go)                                |
 | `.github/workflows/` | Сборка артефактов на тег `v*` (webui, scripts, установщики) |
 | `VERSION`            | Текущая версия релиза                                |
+
+Ядро: `templates/99-nanopi-forward.conf` (forwarding, `nf_conntrack_max=65536`,
+TCP established 7200 с) и conntrack `hashsize=16384`
+(`/etc/modprobe.d/nanopi-conntrack.conf` + запись в `/sys` без перезагрузки,
+`nf_conntrack` в `/etc/modules-load.d/`) ставит `install-singbox.sh` при установке и
+upgrade; старый дубль `/etc/sysctl.d/98-nanopi-conntrack.conf` удаляется, если все
+его значения уже есть в 99-м.
 
 Секреты (UUID, Reality keys, белые IP, боевой `config.json`, пароль PPPoE,
 `HAIRPIN_DNS_TARGET`, `inbound-vless-reality.json`) в git **не** хранятся.

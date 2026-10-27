@@ -13,8 +13,19 @@ API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-ppp
 **Конфиг** (или вручную): домены — правило `outbound=proxy` + `domain_suffix`;
 DNS — `dns.servers` / `dns.rules`. Перед перезапуском — `sing-box check`.
 
+**Проброс портов:** страница `/port-forwards` — общая таблица правил DNAT
+(вкл/выкл, TCP/UDP/оба, внешний порт → внутренний IP:порт, комментарий), маршрут в
+домашнюю сеть (`home_net`/`home_via`), столбец «Подключений / трафик» из
+`nft -j list table inet nanopi_portforward` и ограничение частоты новых соединений
+с одного IP на WAN (по умолчанию 120/мин, запас 240; drop + счётчик, опционально
+лог `nanopi-pf-ratelimit:`). Код — `internal/portfwd`: валидация, рендер nft,
+`nft -c` → атомарная запись → `nft -f` только этой таблицы (без перезапуска
+sing-box/nftables), откат при ошибке. `GET /api/port-forwards` — JSON.
+
 **Nginx Proxy Manager:** страница `/proxy-manager` — IP виртуалки в домашней LAN;
-NanoPi сам ставит DNAT 80/443, маршрут за CPE и DNS hairpin. Пустое сохранение всё снимает.
+NanoPi сам ставит DNAT 80/443 (правила с комментарием `nginx-proxy-manager` в той же
+таблице проброса), маршрут за CPE и DNS hairpin. Пустое сохранение снимает только
+это, прочие пробросы остаются.
 На Keenetic: DNS = `10.10.10.1`, МЭ с `10.10.10.0/24` на Nginx Proxy Manager.
 
 **Мобильный VLESS:** страница `/mobile-vless` — сначала создание профиля (метка + порт),

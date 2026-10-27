@@ -265,6 +265,48 @@ download_scripts_bundle() {
   printf '%s\n' "$tag" >"$tmp/BUNDLE_TAG"
 }
 
+# conntrack: модуль при загрузке + hashsize (modprobe.d и сразу в /sys). Идемпотентно.
+install_conntrack_tuning() {
+  local tpl="$1" want cur param=/sys/module/nf_conntrack/parameters/hashsize
+  [[ -f "$tpl/nanopi-conntrack.modprobe.conf" ]] || die "в bundle нет templates/nanopi-conntrack.modprobe.conf"
+  [[ -f "$tpl/nanopi-conntrack.modules-load.conf" ]] || die "в bundle нет templates/nanopi-conntrack.modules-load.conf"
+  mkdir -p /etc/modprobe.d /etc/modules-load.d
+  install -m 644 "$tpl/nanopi-conntrack.modprobe.conf" /etc/modprobe.d/nanopi-conntrack.conf
+  install -m 644 "$tpl/nanopi-conntrack.modules-load.conf" /etc/modules-load.d/nanopi-conntrack.conf
+  modprobe nf_conntrack 2>/dev/null || info "modprobe nf_conntrack не удался — hashsize применится после перезагрузки"
+  want=$(sed -n 's/^[[:space:]]*options[[:space:]]\+nf_conntrack[[:space:]].*hashsize=\([0-9]\+\).*/\1/p' \
+    /etc/modprobe.d/nanopi-conntrack.conf | head -1)
+  if [[ -n "$want" && -w "$param" ]]; then
+    cur=$(cat "$param" 2>/dev/null || echo "")
+    if [[ "$cur" != "$want" ]]; then
+      if echo "$want" >"$param" 2>/dev/null; then
+        ok "conntrack hashsize: ${cur:-?} → ${want}"
+      else
+        info "не удалось записать hashsize=${want} (применится после перезагрузки)"
+      fi
+    else
+      ok "conntrack hashsize=${want}"
+    fi
+  fi
+}
+
+# Убрать старый дубль sysctl, если все его ключи с теми же значениями уже в основном файле.
+remove_dup_sysctl() {
+  local dup="$1" main="$2" line key val
+  [[ -f "$dup" && -f "$main" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%%#*}
+    line=$(echo "$line" | tr -d '[:space:]')
+    [[ -z "$line" ]] && continue
+    [[ "$line" == *=* ]] || return 0
+    key=${line%%=*}
+    val=${line#*=}
+    sed 's/#.*//' "$main" | tr -d ' \t\r' | grep -qxF "${key}=${val}" || return 0
+  done <"$dup"
+  rm -f "$dup"
+  ok "убран дубль ${dup} (значения есть в ${main})"
+}
+
 install_scripts_bundle() {
   explain \
     "Скачаю ${SCRIPTS_ASSET} из GitHub Release → ${SCRIPTS_DIR}/
@@ -314,8 +356,11 @@ inbound-status, common.sh) + templates (sing-box.service, sysctl)." \
   mkdir -p /etc/systemd/system/dnsmasq.service.d
   install -m 644 "$templates_dst/dnsmasq-sing-box.conf" /etc/systemd/system/dnsmasq.service.d/sing-box.conf
   [[ -f "$templates_dst/99-nanopi-forward.conf" ]] || die "в bundle нет templates/99-nanopi-forward.conf"
+  # conntrack до sysctl: без загруженного nf_conntrack ключи net.netfilter.* не применятся
+  install_conntrack_tuning "$templates_dst"
   install -m 644 "$templates_dst/99-nanopi-forward.conf" /etc/sysctl.d/99-nanopi-forward.conf
   sysctl -p /etc/sysctl.d/99-nanopi-forward.conf
+  remove_dup_sysctl /etc/sysctl.d/98-nanopi-conntrack.conf /etc/sysctl.d/99-nanopi-forward.conf
 
   systemctl daemon-reload
   systemctl enable sing-box

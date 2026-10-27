@@ -84,7 +84,7 @@ jobs:
           echo "scripts_archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
           tar tzf "${GITHUB_WORKSPACE}/${ARCHIVE}"
           test "$(find /tmp/${STAGE}/scripts -type f | wc -l)" -eq 9
-          test "$(find /tmp/${STAGE}/templates -type f | wc -l)" -eq 17
+          test "$(find /tmp/${STAGE}/templates -type f | wc -l)" -eq 19
 
       - name: Upload artifact (workflow)
         uses: actions/upload-artifact@v4
