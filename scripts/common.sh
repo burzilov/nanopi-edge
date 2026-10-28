@@ -286,6 +286,26 @@ nanopi_restart_nftables() {
   fi
 }
 
+# Панель (если установлена и включена) должна работать после router-on.
+# Она слушает WEBUI_LISTEN с IP_FREEBIND и обычно уже active; если она упала
+# раньше (старый бинарь без freebind, лимит перезапусков) — запустить заново.
+# Активную панель не перезапускаем: router-on может быть вызван из её же сессии.
+nanopi_ensure_webui() {
+  local unit=nanopi-webui
+  systemctl cat "$unit" >/dev/null 2>&1 || return 0
+  systemctl is-enabled --quiet "$unit" 2>/dev/null || return 0
+  if systemctl is-active --quiet "$unit" 2>/dev/null; then
+    echo "    панель ${unit}: active"
+    return 0
+  fi
+  systemctl reset-failed "$unit" 2>/dev/null || true
+  if systemctl start "$unit" 2>/dev/null; then
+    echo "    панель ${unit}: запущена"
+  else
+    echo "    WARN: панель ${unit} не стартовала — journalctl -u ${unit} -n 40" >&2
+  fi
+}
+
 nanopi_ensure_lan_dual_serve() {
   local lan wan
   lan=${LAN_IF:?LAN_IF не задан}

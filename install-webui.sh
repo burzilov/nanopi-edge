@@ -209,6 +209,8 @@ install_from_archive() {
 Description=NanoPi sing-box web UI
 After=network-online.target sing-box.service
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -217,7 +219,7 @@ EnvironmentFile=-/opt/nanopi-edge/.env
 Environment=WEBUI_ENV=/opt/nanopi-edge/.env
 ExecStart=/usr/local/bin/nanopi-webui
 Restart=on-failure
-RestartSec=2s
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
@@ -254,14 +256,58 @@ EOF
 
   systemctl daemon-reload
   systemctl enable nanopi-webui
+  systemctl reset-failed nanopi-webui 2>/dev/null || true
+  local r0 r1
+  r0=$(webui_nrestarts)
   systemctl restart nanopi-webui
-  sleep 1
-  systemctl is-active --quiet nanopi-webui || {
+  sleep 2
+  r1=$(webui_nrestarts)
+  if ! systemctl is-active --quiet nanopi-webui || (( r1 > r0 )); then
     journalctl -u nanopi-webui -n 40 --no-pager >&2 || true
-    die "nanopi-webui не active"
-  }
+    die "nanopi-webui не active (автоперезапусков за 2 с: $(( r1 - r0 )))"
+  fi
   ok "nanopi-webui active"
+  webui_report_listen
   rm -rf "$stage"
+}
+
+# Счётчик автоперезапусков unit (systemd NRestarts); не число → 0.
+webui_nrestarts() {
+  local n
+  n=$(systemctl show -p NRestarts --value nanopi-webui 2>/dev/null || true)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  echo "$n"
+}
+
+# Адрес из WEBUI_LISTEN (host:port) есть на интерфейсах? 0 — есть (или wildcard/loopback).
+webui_listen_host() {
+  local listen="${1:-10.10.10.1:80}" host
+  host="${listen%:*}"
+  host="${host#[}"; host="${host%]}"
+  printf '%s\n' "$host"
+}
+
+webui_listen_present() {
+  local host
+  host=$(webui_listen_host "$1")
+  case "$host" in
+    ""|0.0.0.0|::|127.*|localhost|::1) return 0 ;;
+  esac
+  ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF -- "$host"
+}
+
+# Сообщение о том, где ждать панель. До router-on адреса LAN нет: панель уже запущена
+# (IP_FREEBIND) и ответит сама, как только router-on назначит адрес.
+webui_report_listen() {
+  local listen
+  listen=$(sed -n 's/^[[:space:]]*WEBUI_LISTEN=//p' "$OPT_ENV" 2>/dev/null | tail -1 | tr -d "\"'[:space:]")
+  listen="${listen:-10.10.10.1:80}"
+  if webui_listen_present "$listen"; then
+    ok "панель: http://${listen}/"
+  else
+    info "Панель запущена и ждёт адрес $(webui_listen_host "$listen"): он появится после router-on."
+    info "После router-on панель откроется на http://${listen}/ без перезапуска."
+  fi
 }
 
 # Пишет update-status.json state=ok, если идёт фоновый apply.
@@ -290,6 +336,10 @@ smoke_test() {
   source "$OPT_ENV"
   local listen="${WEBUI_LISTEN:-10.10.10.1:80}"
   local code
+  if ! webui_listen_present "$listen"; then
+    info "smoke-тест пропущен: адреса $(webui_listen_host "$listen") ещё нет (до router-on)"
+    return 0
+  fi
   code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 "http://${listen}/" || echo "000")
   if [[ "$code" =~ ^[23] ]]; then
     ok "HTTP ${code} на http://${listen}/"

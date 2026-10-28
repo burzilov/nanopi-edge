@@ -262,6 +262,30 @@ bash install-singbox.sh
 | `SSH_ALLOW_WAN=1` | не закрывать SSH с WAN в nftables |
 
 `NANOPI_YES=1` без ссылок при необходимости собрать `config.json` — понятная ошибка.
+
+**Что происходит при установке (порядок):** скрипты и templates (`root:root`) →
+пакеты через apt (в lab dnsmasq заранее `mask`, а на время apt ставится временный
+`/usr/sbin/policy-rc.d` — пакеты не стартуют свои службы; файл убирается сразу после
+apt) → бинарник sing-box (скачивание с повторами и строкой прогресса раз в ~10 с —
+**может занять несколько минут**) → только теперь unit `sing-box` и drop-in dnsmasq
+(`Requires=sing-box`) → `.env` → `config.json` → запуск. После запуска установщик
+ждёт готовности до 90 с (`NANOPI_READY_TIMEOUT`): `sb-tun`, clash_api `:9090` и первый
+запрос через proxy — на первом старте sing-box качает remote rule-set'ы. Не дождался —
+печатает диагностику (`journalctl`, `sb-tun`, `:9090`), тесты ниже покажут, что не так.
+
+**Приёмочные тесты** (`bash install-singbox.sh test`): proxy проверяется не по «IP ≠ WAN»
+(в lab за роутером с VPN внешний IP и так чужой), а по цепочке соединения к
+`api.ipify.org` в clash_api: должна быть `<узел> ← proxy`, где узел = выбранный в
+selector; внешний IP дополнительно сверяется с адресом узла.
+
+**Порт auto_redirect** (в `ss` — sing-box на `0.0.0.0:<случайный>`, напр. `39439`):
+это redirect-сервер TUN. Снаружи он закрыт: sing-box сам добавляет в
+`table inet sing-box` / `chain input` правило
+`tcp dport <порт> ct status ! dnat reject with tcp reset` (принимаются только
+перенаправленные им же соединения). После перезапуска nftables (`router-on`,
+`flush ruleset`) таблица восстанавливается рестартом sing-box. Тест
+`redirect-порт … закрыт снаружи` это проверяет; вручную:
+`nft list chain inet sing-box input`.
 При upgrade существующий `config.json` по умолчанию не трогается, ссылки не нужны.
 
 **Hairpin DNS (шаг 6b).** Мастер спрашивает LAN IP Nginx Proxy Manager:
@@ -319,6 +343,13 @@ bash install-webui.sh
 поставленного релиза (не понижает её и не трогает остальные переменные).
 
 Панель: `http://10.10.10.1/` (без auth — доверяй только LAN).
+
+**До `router-on`** (lab, свежая плата) адреса `10.10.10.1` на LAN ещё нет. Это
+нормально: `install-webui.sh` завершается успешно и пишет «панель запущена и ждёт
+адрес 10.10.10.1: он появится после router-on». Панель уже `active` (слушает с
+`IP_FREEBIND`), без петли перезапусков, и сама начнёт отвечать, когда `router-on`
+назначит адрес; `router-on` в конце дополнительно запускает панель, если она
+установлена и не работает. Unit: `RestartSec=5s`, не больше 10 стартов за 5 минут.
 На статусе — переключатель WAN DHCP|PPPoE, креды, VLAN; пароль ISP в
 `/etc/ppp/nanopi-wan.secret` (0600). В шапке — версия и «Обновления».
 
@@ -332,7 +363,9 @@ bash install-webui.sh
 - IPv4 VLESS-узлов — одно отдельное route-правило `direct` (не в reject/DNS-правилах);
 - список доменов прокси один: route `outbound=proxy` → DNS-правило `dns-proxy`
   (и при сохранении в панели **Домены**);
-- drop-in dnsmasq (`Requires=sing-box`), unit sing-box, sysctl/conntrack, nftables.
+- drop-in dnsmasq (`Requires=sing-box`), unit sing-box (оба — после бинарника),
+  sysctl/conntrack, nftables;
+- панель (`install-webui.sh`) можно ставить до врезки — откроется после `router-on`.
 
 Руками:
 

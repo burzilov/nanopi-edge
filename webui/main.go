@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"html/template"
@@ -13,6 +14,7 @@ import (
 
 	"nanopi-webui/internal/clash"
 	"nanopi-webui/internal/config"
+	"nanopi-webui/internal/listen"
 	"nanopi-webui/internal/portfwd"
 	"nanopi-webui/internal/update"
 	"nanopi-webui/internal/web"
@@ -79,8 +81,18 @@ func main() {
 	}
 
 	addr := env.Listen
-	log.Printf("nanopi-webui %s listening on http://%s/", Version, addr)
-	if err := http.ListenAndServe(addr, srv.Routes()); err != nil {
+	// IP_FREEBIND: до router-on адреса 10.10.10.1 ещё нет — панель всё равно
+	// стартует и начнёт отвечать, как только router-on назначит адрес.
+	ln, err := listen.Listen(context.Background(), addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if listen.AddrPresent(addr) {
+		log.Printf("nanopi-webui %s listening on http://%s/", Version, addr)
+	} else {
+		log.Printf("nanopi-webui %s listening on http://%s/ (адреса пока нет на интерфейсах — панель ответит после router-on)", Version, addr)
+	}
+	if err := http.Serve(ln, srv.Routes()); err != nil {
 		log.Fatal(err)
 	}
 }

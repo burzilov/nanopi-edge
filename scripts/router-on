@@ -33,4 +33,7 @@ fi
 # wan-dhcp сам убирает lab-файл (30-ethernets-dhcp) и применяет сеть
 "$SCRIPT_DIR/wan-dhcp"
 
+# Панель слушает 10.10.10.1 — теперь адрес есть; убедиться, что она работает.
+nanopi_ensure_webui
+
 echo "[ok] router-on. Проверь: ip -br addr; ${LAN_IF}=10.10.10.1; wan-status"

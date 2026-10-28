@@ -37,6 +37,7 @@ SB_DIR=/etc/sing-box
 SB_CFG="$SB_DIR/config.json"
 MOBILE_VLESS_STATE="$SB_DIR/inbound-vless-reality.json"
 UNIT_DST=/etc/systemd/system/sing-box.service
+DNSMASQ_DROPIN=/etc/systemd/system/dnsmasq.service.d/sing-box.conf
 NETPLAN_DIR=/etc/netplan
 SELF_INSTALL="$OPT_ROOT/install-singbox.sh"
 
@@ -376,6 +377,38 @@ ensure_download_deps() {
     curl jq ca-certificates
 }
 
+# Скачать url → dest: до 3 попыток (+ curl --retry), прогресс раз в ~10 с (размер, время).
+# В логах без tty прогресс-бар curl бесполезен, поэтому печатаем строку сами.
+download_file() {
+  local url="$1" dest="$2" label="${3:-$(basename "$2")}"
+  local attempt pid rc t size
+  for attempt in 1 2 3; do
+    rm -f "$dest"
+    curl -fL -sS --retry 3 --retry-delay 3 --retry-connrefused \
+      --connect-timeout 20 --speed-limit 1024 --speed-time 60 \
+      -o "$dest" "$url" &
+    pid=$!
+    t=0
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+      t=$((t + 1))
+      if (( t % 10 == 0 )) && kill -0 "$pid" 2>/dev/null; then
+        size=$(stat -c %s "$dest" 2>/dev/null || echo 0)
+        info "… ${label}: скачано $((size / 1024)) КБ за ${t} с"
+      fi
+    done
+    rc=0
+    wait "$pid" || rc=$?
+    if [[ "$rc" -eq 0 && -s "$dest" ]]; then
+      return 0
+    fi
+    info "скачивание ${label} не удалось (попытка ${attempt}/3, curl rc=${rc})"
+    [[ "$attempt" -lt 3 ]] && sleep 5
+  done
+  rm -f "$dest"
+  return 1
+}
+
 download_scripts_bundle() {
   local tmp="$1" repo version api_base meta download_url tag
   repo=$(edge_resolve_github_repo)
@@ -397,7 +430,8 @@ download_scripts_bundle() {
     || die "в release ${tag} (${repo}) нет ассета ${SCRIPTS_ASSET}"
 
   info "Скачиваю ${SCRIPTS_ASSET} из ${repo} (${tag})"
-  curl -fsSL -o "$tmp/$SCRIPTS_ASSET" "$download_url"
+  download_file "$download_url" "$tmp/$SCRIPTS_ASSET" "$SCRIPTS_ASSET" \
+    || die "не удалось скачать ${SCRIPTS_ASSET} (${download_url})"
   printf '%s\n' "$tag" >"$tmp/BUNDLE_TAG"
 }
 
@@ -447,8 +481,9 @@ install_scripts_bundle() {
   explain \
     "Скачаю ${SCRIPTS_ASSET} из GitHub Release → ${SCRIPTS_DIR}/
 (router-on, lab-on, wan-dhcp, wan-pppoe, wan-status, proxy-select, hairpin-dns-refresh,
-inbound-status, common.sh) + templates (sing-box.service, sysctl)." \
-    "Скрипты executable на месте; sing-box unit enabled"
+inbound-status, common.sh) + templates (sing-box.service, sysctl).
+Unit sing-box и drop-in dnsmasq поставлю позже — после бинарника (шаг 5)." \
+    "Скрипты executable на месте; templates root:root"
 
   ensure_download_deps
   mkdir -p "$SCRIPTS_DIR" "$OPT_ROOT"
@@ -458,7 +493,7 @@ inbound-status, common.sh) + templates (sing-box.service, sysctl)." \
   local stage bundle_root scripts_src templates_src archive
   archive="$_SCRIPTS_INSTALL_TMP/$SCRIPTS_ASSET"
   stage=$(mktemp -d)
-  tar -xzf "$archive" -C "$stage"
+  tar --no-same-owner -xzf "$archive" -C "$stage"
 
   if [[ -f "$stage/nanopi-edge-scripts/scripts/common.sh" ]]; then
     bundle_root="$stage/nanopi-edge-scripts"
@@ -483,23 +518,19 @@ inbound-status, common.sh) + templates (sing-box.service, sysctl)." \
   local templates_dst="$OPT_ROOT/templates"
   mkdir -p "$templates_dst"
   [[ -d "$templates_src" ]] || die "в bundle нет каталога templates/"
-  cp -a "$templates_src/." "$templates_dst/"
-  chmod -R a+rX "$templates_dst"
+  cp -r "$templates_src/." "$templates_dst/"
+  # uid/gid из архива CI (runner 1001) не тащим: всё в /opt/nanopi-edge — root:root
+  chown -R root:root "$templates_dst"
+  chmod -R u+rwX,go+rX,go-w "$templates_dst"
 
   [[ -f "$templates_dst/sing-box.service" ]] || die "в bundle нет templates/sing-box.service"
-  install -m 644 "$templates_dst/sing-box.service" "$UNIT_DST"
   [[ -f "$templates_dst/dnsmasq-sing-box.conf" ]] || die "в bundle нет templates/dnsmasq-sing-box.conf"
-  mkdir -p /etc/systemd/system/dnsmasq.service.d
-  install -m 644 "$templates_dst/dnsmasq-sing-box.conf" /etc/systemd/system/dnsmasq.service.d/sing-box.conf
   [[ -f "$templates_dst/99-nanopi-forward.conf" ]] || die "в bundle нет templates/99-nanopi-forward.conf"
   # conntrack до sysctl: без загруженного nf_conntrack ключи net.netfilter.* не применятся
   install_conntrack_tuning "$templates_dst"
   install -m 644 "$templates_dst/99-nanopi-forward.conf" /etc/sysctl.d/99-nanopi-forward.conf
   sysctl -p /etc/sysctl.d/99-nanopi-forward.conf
   remove_dup_sysctl /etc/sysctl.d/98-nanopi-conntrack.conf /etc/sysctl.d/99-nanopi-forward.conf
-
-  systemctl daemon-reload
-  systemctl enable sing-box
 
   rm -rf "$stage" "$_SCRIPTS_INSTALL_TMP"
   _SCRIPTS_INSTALL_TMP=
@@ -508,6 +539,31 @@ inbound-status, common.sh) + templates (sing-box.service, sysctl)." \
 
 
 # --- пакеты / sysctl / sing-box ---
+
+# На время apt запретить пакетам стартовать службы (invoke-rc.d / deb-systemd-invoke
+# смотрят /usr/sbin/policy-rc.d; 101 = «действие запрещено»). Свой файл ставим только
+# если чужого нет; снимаем сразу после apt и на выходе скрипта (trap).
+POLICY_RC=/usr/sbin/policy-rc.d
+_POLICY_RC_OURS=0
+_POLICY_RC_MARK="# nanopi-edge: временный запрет старта служб на время apt"
+
+policy_rc_block() {
+  if [[ -e "$POLICY_RC" ]]; then
+    info "${POLICY_RC} уже есть — не трогаю"
+    return 0
+  fi
+  printf '#!/bin/sh\n%s\nexit 101\n' "$_POLICY_RC_MARK" >"$POLICY_RC"
+  chmod 755 "$POLICY_RC"
+  _POLICY_RC_OURS=1
+  trap policy_rc_restore EXIT
+}
+
+policy_rc_restore() {
+  if [[ "$_POLICY_RC_OURS" -eq 1 ]] && grep -qF "$_POLICY_RC_MARK" "$POLICY_RC" 2>/dev/null; then
+    rm -f "$POLICY_RC"
+  fi
+  _POLICY_RC_OURS=0
+}
 
 install_packages() {
   detect_router_live
@@ -539,10 +595,18 @@ nftables/dnsmasq сразу выключу — в lab не должны слуш
   if [[ ${#missing[@]} -gt 0 ]]; then
     info "Не хватает пакетов: ${missing[*]}"
   fi
+  if [[ "$ROUTER_LIVE" -ne 1 ]]; then
+    # lab: dnsmasq не должен стартовать даже на секунду (порт 53/67 в LAN роутера).
+    systemctl mask dnsmasq 2>/dev/null || true
+    policy_rc_block
+  fi
   apt-get update -y
+  local apt_rc=0
   apt-get install -y --no-install-recommends \
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-    "${pkgs[@]}"
+    "${pkgs[@]}" || apt_rc=$?
+  policy_rc_restore
+  [[ "$apt_rc" -eq 0 ]] || die "apt-get install завершился с ошибкой (rc=${apt_rc})"
 
   if [[ "$ROUTER_LIVE" -eq 1 ]]; then
     info "router live — пропускаю disable nftables / mask dnsmasq"
@@ -553,6 +617,22 @@ nftables/dnsmasq сразу выключу — в lab не должны слуш
   systemctl stop dnsmasq 2>/dev/null || true
 }
 
+
+# Unit sing-box + drop-in dnsmasq (After=/Requires=sing-box) — только когда бинарник
+# ${SINGBOX_BIN} уже на месте: иначе systemd успеет дёрнуть unit без ExecStart-файла
+# (203/EXEC), а dnsmasq потянет за собой несуществующий sing-box.
+install_service_units() {
+  local tpl="$OPT_ROOT/templates"
+  [[ -x "$SINGBOX_BIN" ]] || die "нет ${SINGBOX_BIN} — unit sing-box ставлю только после бинарника"
+  [[ -f "$tpl/sing-box.service" ]] || die "нет ${tpl}/sing-box.service (обнови scripts bundle)"
+  [[ -f "$tpl/dnsmasq-sing-box.conf" ]] || die "нет ${tpl}/dnsmasq-sing-box.conf (обнови scripts bundle)"
+  install -m 644 "$tpl/sing-box.service" "$UNIT_DST"
+  mkdir -p "$(dirname "$DNSMASQ_DROPIN")"
+  install -m 644 "$tpl/dnsmasq-sing-box.conf" "$DNSMASQ_DROPIN"
+  systemctl daemon-reload
+  systemctl enable sing-box
+  ok "unit sing-box (enabled) и drop-in dnsmasq → sing-box"
+}
 
 install_singbox_binary() {
   explain \
@@ -571,8 +651,10 @@ install_singbox_binary() {
   esac
   url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${arch}.tar.gz"
   tmp=$(mktemp -d)
-  curl -fsSL -o "$tmp/sb.tgz" "$url"
-  tar -xzf "$tmp/sb.tgz" -C "$tmp"
+  info "Скачиваю sing-box ${SINGBOX_VERSION} (${arch}, ~15 МБ) с GitHub — может занять несколько минут"
+  download_file "$url" "$tmp/sb.tgz" "sing-box-${SINGBOX_VERSION}-linux-${arch}.tar.gz" \
+    || { rm -rf "$tmp"; die "не удалось скачать sing-box: ${url}"; }
+  tar --no-same-owner -xzf "$tmp/sb.tgz" -C "$tmp"
   install -m 755 "$tmp"/sing-box-*/sing-box "$SINGBOX_BIN"
   rm -rf "$tmp"
   "$SINGBOX_BIN" version | head -1
@@ -1529,7 +1611,168 @@ start_singbox() {
     journalctl -u sing-box -n 40 --no-pager >&2 || true
     die "sing-box не active — смотри journalctl -u sing-box"
   }
-  sleep 3
+  wait_singbox_ready || true
+}
+
+# Секрет clash_api из .env (без вывода).
+clash_secret_from_env() {
+  sed -n 's/^[[:space:]]*CLASH_SECRET=//p' "$OPT_ENV" 2>/dev/null | tail -1 | tr -d "\"'[:space:]"
+}
+
+clash_api_from_env() {
+  local v
+  v=$(sed -n 's/^[[:space:]]*CLASH_API=//p' "$OPT_ENV" 2>/dev/null | tail -1 | tr -d "\"'[:space:]")
+  echo "${v:-http://127.0.0.1:9090}"
+}
+
+# Дождаться готовности: sb-tun, clash_api /version и первый запрос через proxy
+# (на первом старте sing-box качает remote rule-set'ы — это десятки секунд).
+# NANOPI_READY_TIMEOUT — потолок в секундах (по умолчанию 90). 0 — готов, 1 — таймаут
+# (тесты ниже покажут, что именно не так).
+wait_singbox_ready() {
+  local timeout="${NANOPI_READY_TIMEOUT:-90}" t=0 tun api net secret api_url
+  secret=$(clash_secret_from_env)
+  api_url=$(clash_api_from_env)
+  info "Жду готовности sing-box (до ${timeout} с): sb-tun, clash_api, выход через proxy…"
+  while :; do
+    tun=нет; api=нет; net=нет
+    ip link show sb-tun >/dev/null 2>&1 && tun=да
+    curl -fsS -o /dev/null --connect-timeout 2 --max-time 3 \
+      -H "Authorization: Bearer ${secret}" "${api_url}/version" 2>/dev/null && api=да
+    if [[ "$tun" == да && "$api" == да ]]; then
+      curl -4 -fsS -o /dev/null --connect-timeout 5 --max-time 8 https://api.ipify.org 2>/dev/null && net=да
+    fi
+    if [[ "$tun" == да && "$api" == да && "$net" == да ]]; then
+      ok "sing-box готов за ~${t} с (sb-tun, clash_api, proxy)"
+      return 0
+    fi
+    if (( t >= timeout )); then
+      break
+    fi
+    if (( t > 0 && t % 10 == 0 )); then
+      info "… ${t}/${timeout} с: sb-tun=${tun} clash_api=${api} proxy=${net} (первый старт качает rule-set'ы)"
+    fi
+    sleep 2
+    t=$((t + 2))
+  done
+  fail "sing-box не готов за ${timeout} с: sb-tun=${tun} clash_api=${api} proxy=${net}"
+  echo "--- диагностика ---" >&2
+  systemctl --no-pager --lines=0 status sing-box >&2 2>/dev/null || true
+  journalctl -u sing-box -n 40 --no-pager >&2 2>/dev/null || true
+  ip -br link show sb-tun >&2 2>/dev/null || echo "sb-tun: нет" >&2
+  ss -Htlnp 2>/dev/null | grep -E ':9090\b' >&2 || echo "никто не слушает :9090" >&2
+  echo "--- конец диагностики (тесты ниже покажут подробности) ---" >&2
+  return 1
+}
+
+# --- проверка пути через proxy ---
+
+# Текущий узел selector proxy: clash_api /proxies/proxy .now, иначе default из config.
+selected_proxy_node() {
+  local now
+  now=$(curl -fsS --connect-timeout 3 --max-time 5 -H "Authorization: Bearer ${CLASH_SECRET}" \
+    "${CLASH_API}/proxies/proxy" 2>/dev/null | jq -r '.now // empty' 2>/dev/null || true)
+  if [[ -z "$now" ]]; then
+    now=$(jq -r '[.outbounds[]? | select(.tag=="proxy")][0].default // empty' "$SB_CFG" 2>/dev/null || true)
+  fi
+  echo "$now"
+}
+
+# IPv4 адреса server узла (IP как есть, имя — getent ahostsv4), по одному в строке.
+node_server_ipv4() {
+  local tag="$1" server
+  server=$(jq -r --arg t "$tag" '[.outbounds[]? | select(.tag==$t)][0].server // empty' "$SB_CFG" 2>/dev/null || true)
+  [[ -n "$server" ]] || return 0
+  if [[ "$server" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$server"
+  else
+    getent ahostsv4 "$server" 2>/dev/null | awk '{print $1}' | sort -u
+  fi
+}
+
+# Открыть TLS к host:443 (держим ~6 с) и найти соединение в clash_api /connections.
+# Печатает chains через запятую (напр. «finland,proxy» или «direct»); пусто — не видно.
+proxy_chain_probe() {
+  local host="${1:-api.ipify.org}" i chains=""
+  ( sleep 6 | timeout 10 openssl s_client -connect "${host}:443" -servername "$host" -quiet \
+      >/dev/null 2>&1 ) &
+  for i in $(seq 1 12); do
+    sleep 0.5
+    chains=$(curl -fsS --connect-timeout 2 --max-time 3 -H "Authorization: Bearer ${CLASH_SECRET}" \
+      "${CLASH_API}/connections" 2>/dev/null \
+      | jq -r --arg h "$host" \
+        '[.connections[]? | select(.metadata.host == $h) | (.chains // []) | join(",")] | map(select(. != "")) | .[0] // empty' \
+        2>/dev/null || true)
+    [[ -n "$chains" ]] && break
+  done
+  echo "$chains"
+}
+
+# Трафик к api.ipify.org (правило → proxy) должен идти через sing-box и узел selector.
+# Одного «IP ≠ WAN» мало: в lab за другим роутером с VPN внешний IP тоже «чужой».
+# Доказательство — цепочка соединения в clash_api; IP узла — дополнительная сверка.
+test_proxy_path() {
+  local node chains proxy_ip node_ips
+  node=$(selected_proxy_node)
+  proxy_ip=$(curl -4 -sS --connect-timeout 15 --max-time 25 https://api.ipify.org 2>/dev/null || true)
+  chains=$(proxy_chain_probe api.ipify.org)
+  node_ips=$(node_server_ipv4 "$node" | tr '\n' ' ' | sed 's/ $//')
+
+  if [[ -z "$chains" ]]; then
+    fail "соединение к api.ipify.org не видно в clash_api — трафик идёт мимо sing-box (TUN/auto_redirect не перехватывает)"
+    [[ -n "$proxy_ip" ]] && info "внешний IP сейчас ${proxy_ip} — он может быть чужим (VPN вышестоящего роутера), это не доказательство"
+    return 1
+  fi
+  if [[ ",${chains}," != *",proxy,"* ]] || [[ "${chains%%,*}" == direct ]]; then
+    fail "api.ipify.org ушёл не через proxy: цепочка ${chains}"
+    return 1
+  fi
+  if [[ -n "$node" && ",${chains}," != *",${node},"* ]]; then
+    fail "api.ipify.org через proxy, но узел ${chains%%,*} ≠ выбранному ${node}"
+    return 1
+  fi
+  ok "api.ipify.org идёт через sing-box: ${chains//,/ ← }"
+
+  if [[ ! "$proxy_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    fail "api.ipify.org не вернул IP (узел ${node:-?} не отвечает?)"
+    return 1
+  fi
+  if [[ -n "$node_ips" && " ${node_ips} " == *" ${proxy_ip} "* ]]; then
+    ok "внешний IP ${proxy_ip} = адрес узла ${node}"
+  else
+    ok "внешний IP ${proxy_ip} (адрес узла ${node}: ${node_ips:-?} — у VPS выход может быть с другого IP)"
+  fi
+  return 0
+}
+
+# auto_redirect: sing-box слушает redirect-порт на 0.0.0.0 (случайный, напр. 39439).
+# sing-tun сам добавляет в table inet sing-box / chain input:
+#   tcp dport <port> ct status ! dnat reject with tcp reset — снаружи (WAN/LAN) порт закрыт.
+# Проверяем, что каждый не-loopback TCP listener sing-box (кроме мобильного VLESS)
+# закрыт таким правилом.
+test_redirect_port_closed() {
+  command -v nft >/dev/null 2>&1 || { info "nft нет — пропускаю проверку redirect-порта"; return 0; }
+  local ports p rules mv_port="" bad=0
+  if [[ -f "$MOBILE_VLESS_STATE" ]] && jq -e '.enabled == true' "$MOBILE_VLESS_STATE" >/dev/null 2>&1; then
+    mv_port=$(jq -r '.port // 8443' "$MOBILE_VLESS_STATE")
+  fi
+  ports=$(ss -Htlnp 2>/dev/null | awk '/"sing-box"/ {print $4}' \
+    | grep -vE '^(127\.|\[::1\]|\[::ffff:127\.)' | sed 's/.*://' | sort -un)
+  if [[ -z "$ports" ]]; then
+    ok "sing-box не слушает TCP вне loopback"
+    return 0
+  fi
+  rules=$(nft list chain inet sing-box input 2>/dev/null || true)
+  for p in $ports; do
+    [[ -n "$mv_port" && "$p" == "$mv_port" ]] && continue
+    if grep -qE "tcp dport ${p}( .*)? reject" <<<"$rules"; then
+      ok "redirect-порт sing-box :${p} закрыт снаружи (inet sing-box input reject)"
+    else
+      fail "sing-box слушает :${p} на всех адресах, а правила reject в inet sing-box input нет"
+      bad=1
+    fi
+  done
+  return "$bad"
 }
 
 # --- тесты ---
@@ -1538,11 +1781,12 @@ run_tests() {
   load_env
   step "T" "Приёмочные тесты (lab, до врезки)"
   explain \
-    "Проверю: ip_forward, unit, TUN, ya.ru (direct), api.ipify.org ≠ ${WAN_IF},
-clash_api, ${SCRIPTS_DIR}/proxy-select get." \
+    "Проверю: ip_forward, unit, TUN, ya.ru (direct), clash_api,
+api.ipify.org через proxy (цепочка в clash_api + IP узла), redirect-порт закрыт снаружи,
+${SCRIPTS_DIR}/proxy-select get." \
     "Все PASS. router-on не нужен."
 
-  local failed=0 wan_ip proxy_ip http_code
+  local failed=0 http_code
 
   if [[ $(sysctl -n net.ipv4.ip_forward) == 1 ]]; then
     ok "ip_forward=1"
@@ -1575,19 +1819,6 @@ clash_api, ${SCRIPTS_DIR}/proxy-select get." \
     fail "ya.ru HTTP $http_code"; failed=1
   fi
 
-  wan_ip=$(ip -4 -o addr show dev "$WAN_IF" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1 || true)
-  proxy_ip=$(curl -4 -sS --connect-timeout 15 --max-time 25 https://api.ipify.org || true)
-  if [[ -n "$proxy_ip" && "$proxy_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    if [[ -n "$wan_ip" && "$proxy_ip" == "$wan_ip" ]]; then
-      fail "api.ipify.org = $proxy_ip совпадает с ${WAN_IF} — proxy не сработал"
-      failed=1
-    else
-      ok "api.ipify.org = $proxy_ip (не ${WAN_IF}=${wan_ip:-?}) — proxy ок"
-    fi
-  else
-    fail "api.ipify.org не вернул IP"; failed=1
-  fi
-
   # shellcheck disable=SC1090
   source "$OPT_ENV"
   if curl -fsS -o /dev/null --connect-timeout 3 \
@@ -1597,6 +1828,10 @@ clash_api, ${SCRIPTS_DIR}/proxy-select get." \
   else
     fail "clash_api недоступен"; failed=1
   fi
+
+  test_proxy_path || failed=1
+
+  test_redirect_port_closed || failed=1
 
   if [[ -x "$SCRIPTS_DIR/proxy-select" ]] && "$SCRIPTS_DIR/proxy-select" get >/dev/null; then
     ok "proxy-select get"
@@ -1830,8 +2065,9 @@ EOF
   step 4 "Пакеты"
   install_packages
 
-  step 5 "Бинарник sing-box"
+  step 5 "Бинарник sing-box + unit"
   install_singbox_binary
+  install_service_units
 
   step 6 ".env (${OPT_ENV})"
   gen_clash_secrets
