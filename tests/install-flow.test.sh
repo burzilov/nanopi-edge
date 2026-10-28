@@ -4,7 +4,8 @@
 #  • apt не стартует службы (policy-rc.d) и убирает за собой;
 #  • скачивание с повторами; ожидание готовности sing-box с диагностикой;
 #  • proxy-тест по цепочке clash_api (без ложного PASS за чужим VPN);
-#  • redirect-порт auto_redirect закрыт reject-правилом sing-box.
+#  • redirect-порт auto_redirect закрыт reject-правилом sing-box;
+#  • (v0.1.17) слушатель на адресе sb-tun (172.19.0.1) и loopback — не «на всех адресах».
 # Запуск: bash tests/install-flow.test.sh  (root и плата не нужны: curl/ss/nft/systemctl — фейки)
 set -euo pipefail
 
@@ -186,13 +187,24 @@ check "proxy: объясняет, что внешний IP не доказате
 check "proxy: узел ≠ выбранному → FAIL" test $rc -ne 0
 
 # ─── redirect-порт (auto_redirect) ──────────────────────────────────
+# ss: строки слушателей sing-box задаются через SS_LISTEN (по умолчанию 0.0.0.0:39439).
 cat >"$B/ss" <<'S'
 #!/bin/bash
-cat <<E
-LISTEN 0 4096 127.0.0.1:9090 0.0.0.0:* users:(("sing-box",pid=1,fd=9))
-LISTEN 0 4096 0.0.0.0:39439 0.0.0.0:* users:(("sing-box",pid=1,fd=7))
-LISTEN 0 128 0.0.0.0:2208 0.0.0.0:* users:(("sshd",pid=2,fd=3))
-E
+echo 'LISTEN 0 4096 127.0.0.1:9090 0.0.0.0:* users:(("sing-box",pid=1,fd=9))'
+for l in ${SS_LISTEN-0.0.0.0:39439}; do
+  echo "LISTEN 0 4096 $l 0.0.0.0:* users:((\"sing-box\",pid=1,fd=7))"
+done
+echo 'LISTEN 0 128 0.0.0.0:2208 0.0.0.0:* users:(("sshd",pid=2,fd=3))'
+S
+# ip -o addr show dev sb-tun → адрес TUN (SBTUN_ADDR, по умолчанию 172.19.0.1/30)
+cat >"$B/ip" <<'S'
+#!/bin/bash
+if [[ "$*" == "-o addr show dev sb-tun" ]]; then
+  [[ -n "${SBTUN_ADDR-172.19.0.1/30}" ]] || exit 1
+  echo "9: sb-tun    inet ${SBTUN_ADDR-172.19.0.1/30} brd 172.19.0.3 scope global sb-tun\       valid_lft forever preferred_lft forever"
+  exit 0
+fi
+exit 1
 S
 cat >"$B/nft" <<'S'
 #!/bin/bash
@@ -201,7 +213,7 @@ cat <<E
 table inet sing-box {
 	chain input {
 		type filter hook input priority filter; policy accept;
-		tcp dport 39439 ct status ! dnat reject with tcp reset
+		tcp dport ${NFT_REJECT} ct status ! dnat reject with tcp reset
 	}
 }
 E
@@ -211,11 +223,27 @@ fi
 S
 chmod +x "$B"/*
 MOBILE_VLESS_STATE="$WORK/none.json"
-(NFT_REJECT=1 test_redirect_port_closed) >"$WORK/r1" 2>&1; rc=$?
-check "redirect :39439 + reject sing-box → PASS" bash -c 'test "$1" -eq 0 && grep -q ":39439 закрыт" "$2"' _ $rc "$WORK/r1"
+(NFT_REJECT=39439 test_redirect_port_closed) >"$WORK/r1" 2>&1; rc=$?
+check "redirect 0.0.0.0:39439 + reject sing-box → PASS" bash -c 'test "$1" -eq 0 && grep -q ":39439 (0.0.0.0) закрыт" "$2"' _ $rc "$WORK/r1"
 (test_redirect_port_closed) >"$WORK/r2" 2>&1; rc=$?
-check "redirect :39439 без reject → FAIL" test $rc -ne 0
+check "redirect 0.0.0.0:39439 без reject → FAIL" test $rc -ne 0
 check "loopback :9090 и чужой sshd не проверяются" bash -c '! grep -qE ":9090|:2208" "$1"' _ "$WORK/r1"
+(SS_LISTEN=172.19.0.1:44187 test_redirect_port_closed) >"$WORK/r3" 2>&1; rc=$?
+check "redirect 172.19.0.1:44187 (адрес sb-tun) без reject → PASS" \
+  bash -c 'test "$1" -eq 0 && grep -q "только на адресе TUN 172.19.0.1" "$2" && ! grep -q "^FAIL\|все/внешние" "$2"' _ $rc "$WORK/r3"
+(SS_LISTEN='172.19.0.1%sb-tun:44187 [::1]:9091' test_redirect_port_closed) >"$WORK/r4" 2>&1; rc=$?
+check "redirect 172.19.0.1%sb-tun и [::1] → PASS" test $rc -eq 0
+(SBTUN_ADDR=172.18.5.1/30 SS_LISTEN=172.18.5.1:44187 test_redirect_port_closed) >"$WORK/r5" 2>&1; rc=$?
+check "redirect на адресе sb-tun из ip addr (не 172.19) → PASS" test $rc -eq 0
+(SS_LISTEN='[::]:39439' test_redirect_port_closed) >"$WORK/r6" 2>&1; rc=$?
+check "redirect [::]:39439 без reject → FAIL" test $rc -ne 0
+(SS_LISTEN='*:39439' NFT_REJECT=39439 test_redirect_port_closed) >"$WORK/r7" 2>&1; rc=$?
+check "redirect *:39439 + reject → PASS" test $rc -eq 0
+(SS_LISTEN=192.168.1.148:39439 test_redirect_port_closed) >"$WORK/r8" 2>&1; rc=$?
+check "redirect на внешнем адресе WAN без reject → FAIL" \
+  bash -c 'test "$1" -ne 0 && grep -q "192.168.1.148:39439" "$2"' _ $rc "$WORK/r8"
+(SS_LISTEN='172.19.0.1:44187 0.0.0.0:39439' NFT_REJECT=44187 test_redirect_port_closed) >"$WORK/r9" 2>&1; rc=$?
+check "TUN-слушатель + 0.0.0.0 без своего reject → FAIL" test $rc -ne 0
 
 # Настоящий nft (если есть и пускает в user netns): формат правила sing-tun.
 if command -v unshare >/dev/null 2>&1 && PATH="${PATH#"$B:"}" unshare -rn nft list ruleset >/dev/null 2>&1; then

@@ -651,7 +651,7 @@ install_singbox_binary() {
   esac
   url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${arch}.tar.gz"
   tmp=$(mktemp -d)
-  info "Скачиваю sing-box ${SINGBOX_VERSION} (${arch}, ~15 МБ) с GitHub — может занять несколько минут"
+  info "Скачиваю sing-box ${SINGBOX_VERSION} (${arch}, ~30 МБ) с GitHub — может занять несколько минут"
   download_file "$url" "$tmp/sb.tgz" "sing-box-${SINGBOX_VERSION}-linux-${arch}.tar.gz" \
     || { rm -rf "$tmp"; die "не удалось скачать sing-box: ${url}"; }
   tar --no-same-owner -xzf "$tmp/sb.tgz" -C "$tmp"
@@ -1745,30 +1745,77 @@ test_proxy_path() {
   return 0
 }
 
-# auto_redirect: sing-box слушает redirect-порт на 0.0.0.0 (случайный, напр. 39439).
+# auto_redirect: sing-box слушает redirect-порт (случайный, напр. 39439/44187).
+# Смотря по версии/ядру — на 0.0.0.0 / [::] или только на адресе TUN (172.19.0.1).
 # sing-tun сам добавляет в table inet sing-box / chain input:
 #   tcp dport <port> ct status ! dnat reject with tcp reset — снаружи (WAN/LAN) порт закрыт.
-# Проверяем, что каждый не-loopback TCP listener sing-box (кроме мобильного VLESS)
-# закрыт таким правилом.
+# Открытым наружу считаем только слушатель на 0.0.0.0 / [::] / * или на внешнем адресе
+# (WAN/LAN). Loopback (127.x, ::1) и адреса интерфейса sb-tun (172.19.0.0/30 и то,
+# что показывает `ip -o addr show dev sb-tun`) — не «на всех адресах».
+# Такой слушатель → FAIL, только если нет reject-правила в inet sing-box input.
+
+# Адреса интерфейса sb-tun (без маски), по одному в строке.
+sbtun_addrs() {
+  ip -o addr show dev sb-tun 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+}
+
+# Локальный адрес из колонки ss (`0.0.0.0:39439`, `[::]:39439`, `*:39439`,
+# `172.19.0.1%sb-tun:44187`) → «адрес порт [устройство]».
+ss_split_local() {
+  local s="$1" addr port dev=""
+  port=${s##*:}
+  addr=${s%:*}
+  addr=${addr#[}; addr=${addr%]}
+  if [[ "$addr" == *%* ]]; then dev=${addr#*%}; addr=${addr%%%*}; fi
+  echo "$addr $port $dev"
+}
+
+# Слушатель только внутри хоста/туннеля? (0 = да, не проверяем)
+listener_is_internal() {
+  local addr="$1" dev="$2" tun_addrs="$3" a
+  [[ "$dev" == sb-tun || "$dev" == lo ]] && return 0
+  case "$addr" in
+    127.*|::1|::ffff:127.*) return 0 ;;
+    172.19.0.0|172.19.0.1|172.19.0.2|172.19.0.3) return 0 ;;   # 172.19.0.0/30 (sb-tun)
+  esac
+  for a in $tun_addrs; do
+    [[ "$addr" == "$a" ]] && return 0
+  done
+  return 1
+}
+
 test_redirect_port_closed() {
   command -v nft >/dev/null 2>&1 || { info "nft нет — пропускаю проверку redirect-порта"; return 0; }
-  local ports p rules mv_port="" bad=0
+  local line addr port dev rules tun_addrs mv_port="" bad=0 ext="" internal="" p
   if [[ -f "$MOBILE_VLESS_STATE" ]] && jq -e '.enabled == true' "$MOBILE_VLESS_STATE" >/dev/null 2>&1; then
     mv_port=$(jq -r '.port // 8443' "$MOBILE_VLESS_STATE")
   fi
-  ports=$(ss -Htlnp 2>/dev/null | awk '/"sing-box"/ {print $4}' \
-    | grep -vE '^(127\.|\[::1\]|\[::ffff:127\.)' | sed 's/.*://' | sort -un)
-  if [[ -z "$ports" ]]; then
-    ok "sing-box не слушает TCP вне loopback"
+  tun_addrs=$(sbtun_addrs | tr '\n' ' ')
+  while read -r line; do
+    [[ -z "$line" ]] && continue
+    read -r addr port dev <<<"$(ss_split_local "$line")"
+    [[ -n "$mv_port" && "$port" == "$mv_port" ]] && continue
+    if listener_is_internal "$addr" "$dev" "$tun_addrs"; then
+      [[ "$addr" == 127.* || "$addr" == ::1 || "$addr" == ::ffff:127.* ]] || internal+="${addr}:${port} "
+      continue
+    fi
+    ext+="${addr}:${port} "
+  done < <(ss -Htlnp 2>/dev/null | awk '/"sing-box"/ {print $4}' | sort -u)
+
+  for p in $internal; do
+    ok "sing-box :${p##*:} слушает только на адресе TUN ${p%:*} — снаружи (WAN/LAN) не на всех адресах"
+  done
+  if [[ -z "$ext" ]]; then
+    [[ -z "$internal" ]] && ok "sing-box не слушает TCP вне loopback/TUN"
     return 0
   fi
   rules=$(nft list chain inet sing-box input 2>/dev/null || true)
-  for p in $ports; do
-    [[ -n "$mv_port" && "$p" == "$mv_port" ]] && continue
-    if grep -qE "tcp dport ${p}( .*)? reject" <<<"$rules"; then
-      ok "redirect-порт sing-box :${p} закрыт снаружи (inet sing-box input reject)"
+  for p in $(tr ' ' '\n' <<<"$ext" | sed '/^$/d' | sort -u); do
+    port=${p##*:}; addr=${p%:*}
+    if grep -qE "tcp dport ${port}( .*)? reject" <<<"$rules"; then
+      ok "redirect-порт sing-box :${port} (${addr}) закрыт снаружи (inet sing-box input reject)"
     else
-      fail "sing-box слушает :${p} на всех адресах, а правила reject в inet sing-box input нет"
+      fail "sing-box слушает ${addr}:${port} (все/внешние адреса), а правила reject в inet sing-box input нет"
       bad=1
     fi
   done
