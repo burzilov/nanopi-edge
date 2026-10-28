@@ -140,7 +140,22 @@
       {
         "action": "route",
         "outbound": "proxy",
-        "domain_suffix": ["2ip.io", "ipify.org"]
+        "domain_suffix": [
+          "2ip.io",
+          "ipify.org",
+          "googlevideo.com",
+          "cursor.com",
+          "cursor.sh",
+          "cursor-cdn.com",
+          "cursorapi.com",
+          "cursorvm.com",
+          "vercel.app",
+          "opencode.ai",
+          "parallel.ai",
+          "scdn.co",
+          "spotifycdn.com",
+          "bip.com"
+        ]
       },
       {
         "action": "route",

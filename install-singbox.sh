@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-SINGBOX_VERSION="${SINGBOX_VERSION:-1.14.0}"
+SINGBOX_VERSION="${SINGBOX_VERSION:-1.14.4}"
 SINGBOX_BIN=/usr/local/bin/sing-box
 OPT_ROOT=/opt/nanopi-edge
 SCRIPTS_DIR="$OPT_ROOT/scripts"
