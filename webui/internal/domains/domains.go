@@ -50,8 +50,14 @@ func ExtractProxyDomains(configJSON []byte) ([]string, error) {
 }
 
 // MergeProxyDomains находит route rule с outbound "proxy" и domain_suffix,
-// заменяет domain_suffix на list.
+// заменяет domain_suffix на list. Тот же список пишется в DNS-правило
+// (dns.rules: server "dns-proxy" + domain_suffix), если оно есть, — чтобы домены
+// из списка и резолвились через прокси. Старые конфиги без такого правила не меняются.
+// Пустой список отклоняется: правило без условий в sing-box совпадает со всем.
 func MergeProxyDomains(configJSON []byte, list []string) ([]byte, error) {
+	if len(list) == 0 {
+		return nil, fmt.Errorf("список доменов пуст")
+	}
 	var root map[string]any
 	if err := json.Unmarshal(configJSON, &root); err != nil {
 		return nil, err
@@ -90,5 +96,36 @@ func MergeProxyDomains(configJSON []byte, list []string) ([]byte, error) {
 	}
 	route["rules"] = rules
 	root["route"] = route
+	syncDNSProxyDomains(root, list)
 	return json.MarshalIndent(root, "", "  ")
+}
+
+// syncDNSProxyDomains обновляет domain_suffix во всех dns.rules с server "dns-proxy"
+// и полем domain_suffix. Нет dns/rules/правила — ничего не делает.
+func syncDNSProxyDomains(root map[string]any, list []string) {
+	dns, ok := root["dns"].(map[string]any)
+	if !ok {
+		return
+	}
+	rules, ok := dns["rules"].([]any)
+	if !ok {
+		return
+	}
+	for i, raw := range rules {
+		rule, ok := raw.(map[string]any)
+		if !ok || rule["server"] != "dns-proxy" {
+			continue
+		}
+		if _, has := rule["domain_suffix"]; !has {
+			continue
+		}
+		arr := make([]any, len(list))
+		for j, d := range list {
+			arr[j] = d
+		}
+		rule["domain_suffix"] = arr
+		rules[i] = rule
+	}
+	dns["rules"] = rules
+	root["dns"] = dns
 }

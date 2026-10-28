@@ -12,8 +12,16 @@
   "dns": {
     "servers": [
       {
-        "type": "local",
-        "tag": "dns-local"
+        "type": "https",
+        "tag": "dns-proxy",
+        "server": "94.140.14.14",
+        "server_port": 443,
+        "path": "/dns-query",
+        "tls": {
+          "enabled": true,
+          "server_name": "dns.adguard-dns.com"
+        },
+        "detour": "proxy"
       },
       {
         "type": "https",
@@ -25,61 +33,53 @@
           "enabled": true,
           "server_name": "dns.adguard-dns.com"
         }
-      },
-      {
-        "type": "https",
-        "tag": "dns-quad9",
-        "server": "9.9.9.9",
-        "server_port": 443,
-        "path": "/dns-query",
-        "tls": {
-          "enabled": true,
-          "server_name": "dns.quad9.net"
-        }
       }
     ],
     "rules": [
       {
-        "action": "evaluate",
-        "server": "dns-direct",
-        "tag": "dns-direct"
+        "domain_suffix": [],
+        "action": "route",
+        "server": "dns-proxy"
+      },
+      {
+        "rule_set": [
+          "geosite-category-ai-!cn",
+          "geosite-ru-blocked",
+          "geosite-telegram"
+        ],
+        "action": "route",
+        "server": "dns-proxy"
+      },
+      {
+        "domain_suffix": [".ru", ".su", ".рф", ".xn--p1ai"],
+        "action": "route",
+        "server": "dns-direct"
       },
       {
         "action": "evaluate",
-        "server": "dns-quad9",
-        "tag": "dns-quad9"
+        "server": "dns-proxy",
+        "timeout": "3s"
       },
       {
-        "match_response": "dns-direct",
+        "match_response": true,
         "response_rcode": "NOERROR",
-        "ip_accept_any": true,
-        "action": "respond",
-        "race": true
+        "action": "respond"
       },
       {
-        "match_response": "dns-quad9",
-        "response_rcode": "NOERROR",
-        "ip_accept_any": true,
-        "action": "respond",
-        "race": true
+        "match_response": true,
+        "response_rcode": "NXDOMAIN",
+        "action": "respond"
       },
       {
         "action": "route",
-        "server": "dns-quad9"
+        "server": "dns-direct"
       }
     ],
-    "final": "dns-quad9",
+    "final": "dns-direct",
     "strategy": "ipv4_only",
     "timeout": "10s"
   },
   "inbounds": [
-    {
-      "type": "direct",
-      "tag": "dns-in",
-      "listen": "127.0.0.1",
-      "listen_port": 5353,
-      "network": "udp"
-    },
     {
       "type": "tun",
       "tag": "tun-in",
@@ -102,10 +102,6 @@
         "ip_cidr": ["169.254.0.0/16"]
       },
       {
-        "inbound": ["dns-in"],
-        "action": "hijack-dns"
-      },
-      {
         "port": 53,
         "action": "hijack-dns"
       },
@@ -124,7 +120,7 @@
       },
       {
         "action": "route",
-        "outbound": "direct",
+        "outbound": "proxy",
         "ip_cidr": [
           "94.140.14.14/32",
           "94.140.15.15/32",
@@ -170,7 +166,7 @@
       {
         "action": "route",
         "outbound": "direct",
-        "domain_suffix": [".ru", ".su", ".рф"]
+        "domain_suffix": [".ru", ".su", ".рф", ".xn--p1ai"]
       }
     ],
     "rule_set": [

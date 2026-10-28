@@ -20,7 +20,7 @@ ISP (DHCP или PPPoE ± VLAN)
 - Выборочный прокси: remote ruleset’ы + домены → VLESS, остальное — direct
 - Несколько VLESS+Reality узлов, переключение через clash_api / CLI / WebUI
 - **Мобильный VLESS+Reality** (TCP/8443): один Hiddify-профиль, трафик через те же route-правила
-- DNS: клиенты → `10.10.10.1` (dnsmasq) → sing-box `:5353` (DoH race AdGuard/Quad9); hairpin alias в dnsmasq
+- DNS: клиенты → `10.10.10.1` (dnsmasq) → AdGuard `94.140.14.14/15.15:53`, перехват в sing-box (hijack-dns) → AdGuard DoH через proxy (фолбэк — напрямую); hairpin alias в dnsmasq
 - WAN к ISP: **DHCP** или **PPPoE** (логин/пароль, опциональный VLAN) — CLI и WebUI
 - LAN к роутеру: одновременно DHCP и PPPoE-server (accept-any) — роутер может
   оставаться в своём WAN-режиме
@@ -36,17 +36,64 @@ IPv6 в первой итерации, раздача белого IP роуте
 Дальше цепочка такая:
 
 ```text
-клиент → 10.10.10.1:53 (dnsmasq) → 127.0.0.1:5353 (sing-box dns-in)
-         → dns.rules (race AdGuard DoH / Quad9 DoH)
+клиент → 10.10.10.1:53 (dnsmasq: кеш, DHCP-имена, hairpin)
+       → server=94.140.14.14 / 94.140.15.15 (UDP/53)
+       → TUN sing-box: route «port 53 → hijack-dns» (запрос не уходит в сеть как есть)
+       → dns.rules:
+           домены из списка прокси, geosite ru-blocked / category-ai-!cn / telegram
+                                   → dns-proxy  (AdGuard DoH 94.140.14.14, SNI dns.adguard-dns.com, detour proxy)
+           .ru / .su / .рф (xn--p1ai) → dns-direct (тот же AdGuard DoH напрямую)
+           всё остальное            → evaluate dns-proxy (таймаут 3 с):
+                                      NOERROR/NXDOMAIN → ответ; ошибка/таймаут/SERVFAIL → dns-direct
+```
+
+- Список доменов прокси один: `domain_suffix` route-правила `outbound=proxy`.
+  Инсталлятор копирует его в DNS-правило `server=dns-proxy`, панель **Домены** при
+  сохранении обновляет оба места.
+- В DNS-правилах нет geoip-наборов (ответ ещё неизвестен на момент выбора сервера).
+- Резолв доменов самих outbound'ов (VLESS-узлы, rule-set) — `route.default_domain_resolver: dns-direct`.
+- DoH/DoT клиентов LAN напрямую на IP AdGuard/Quad9 (`94.140.14.14/15.15`, `9.9.9.9`, порт 443)
+  идёт через proxy; порт 853 (DoT) режется, чтобы клиенты откатывались на обычный DNS.
+
+**dnsmasq ↔ sing-box.** Drop-in `/etc/systemd/system/dnsmasq.service.d/sing-box.conf`:
+`After=sing-box.service` + `Requires=sing-box.service`. На `Wants=` **не** менять:
+`ExecStartPost` unit'а sing-box синхронно делает `systemctl try-restart dnsmasq`, а
+dnsmasq ждёт sing-box (`After=`) — запуск взаимно блокируется, sing-box висит в
+`activating`, в LAN нет DNS и DHCP. Следствия `Requires=`:
+
+- `systemctl stop sing-box` останавливает и dnsmasq — **в LAN пропадают DNS и DHCP**.
+  «Аварийного пути» (sing-box выключен → dnsmasq ходит в AdGuard напрямую) штатно нет.
+- `systemctl restart sing-box` перезапускает и dnsmasq (это нормально, кеш сбрасывается).
+- Если sing-box не стартует, dnsmasq тоже не стартует. Чинить конфиг: `sing-box check -c
+  /etc/sing-box/config.json`, откат на бэкап `config.json.bak.*`, затем
+  `systemctl restart sing-box dnsmasq`.
+
+Если нужно временно жить **без** sing-box (DNS напрямую в AdGuard `94.140.14.14/15.15:53`,
+без прокси и без DoH), сначала снять зависимость:
+
+```bash
+mkdir -p /root/dnsmasq-dropin-off
+mv /etc/systemd/system/dnsmasq.service.d/sing-box.conf /root/dnsmasq-dropin-off/
+systemctl daemon-reload && systemctl stop sing-box && systemctl restart dnsmasq
+dig @10.10.10.1 ya.ru +short
+# вернуть:
+mv /root/dnsmasq-dropin-off/sing-box.conf /etc/systemd/system/dnsmasq.service.d/
+systemctl daemon-reload && systemctl restart sing-box
 ```
 
 Локальные подмены (hairpin для Nginx Proxy Manager) по-прежнему в **dnsmasq**
-(`hairpin-alias.conf`), до форварда в sing-box: общий `alias=` (белый IP → NPM) и
+(`hairpin-alias.conf`), до форварда в upstream: общий `alias=` (белый IP → NPM) и
 исключения `address=/имя/адрес` (имя и поддомены → свой адрес, например NAS).
 
-Upstream и failover правятся в `/etc/sing-box/config.json` (панель **Конфиг** или
+Upstream и failover sing-box правятся в `/etc/sing-box/config.json` (панель **Конфиг** или
 вручную) → `sing-box check` → перезапуск sing-box; dnsmasq перезапустится сам
-(`ExecStartPost` в unit sing-box).
+(`ExecStartPost` в unit sing-box) и сбросит кеш.
+
+Upgrade (`install-singbox.sh` повторно) по умолчанию **не** трогает ни
+`/etc/sing-box/config.json`, ни `/etc/dnsmasq.d/lan.conf` (его пишет только `router-on`).
+Свежая установка (мастер + `router-on`) сразу даёт эту схему. Конфиг со старой схемой
+(`server=127.0.0.1#5353` + inbound `dns-in`) нельзя пересобирать мастером, оставив
+старый `lan.conf`: `config.json` и `lan.conf` меняются только вместе.
 
 ## Железо и ОС
 
@@ -124,6 +171,36 @@ bash install-webui.sh
 Панель: `http://10.10.10.1/` (без auth — доверяй только LAN).
 На статусе — переключатель WAN DHCP|PPPoE, креды, VLAN; пароль ISP в
 `/etc/ppp/nanopi-wan.secret` (0600). В шапке — версия и «Обновления».
+
+### 4. Новая плата: что автоматически, а что руками
+
+Автоматически (`install-singbox.sh` + `router-on`):
+
+- `/etc/dnsmasq.d/lan.conf` с `server=94.140.14.14` / `server=94.140.15.15` (без `:5353`);
+- `/etc/sing-box/config.json` с DNS `dns-proxy` (AdGuard DoH через proxy) / `dns-direct`
+  (фолбэк и `.ru/.su/.рф`), без `dns-in`;
+- IPv4 VLESS-узлов — одно отдельное route-правило `direct` (не в reject/DNS-правилах);
+- список доменов прокси один: route `outbound=proxy` → DNS-правило `dns-proxy`
+  (и при сохранении в панели **Домены**);
+- drop-in dnsmasq (`Requires=sing-box`), unit sing-box, sysctl/conntrack, nftables.
+
+Руками:
+
+1. Armbian, доступ root по SSH (ключ); настройки sshd — по вкусу.
+2. Мастер VLESS в `install-singbox.sh`: для каждого VPS — адрес, порт, UUID,
+   Reality public key, short_id, SNI; выбор узла по умолчанию.
+3. Врезка и `router-on` (раздел 2), PPPoE-креды ISP, если нужны; hairpin —
+   `HAIRPIN_DNS_TARGET=<IP NPM>` в `/opt/nanopi-edge/.env` (если не задан) и
+   `scripts/hairpin-dns-refresh`.
+4. `install-webui.sh`; в панели — проброс портов и исключения hairpin
+   (или перенести `/opt/nanopi-edge/port-forwards.json`, `hairpin-overrides.json`
+   со старой платы).
+5. Мобильный VLESS — новый профиль в панели (новый QR для телефона). Чтобы оставить
+   старый профиль: перенести `/etc/sing-box/inbound-vless-reality.json` (`0600`) до
+   запуска мастера — inbound `vless-mobile` восстановится сам.
+6. Свои правила маршрутизации (личные IP/подсети → proxy/direct) — панель **Конфиг**;
+   в шаблоне их нет.
+7. Диагностические пакеты по желанию: `apt install dnsutils tcpdump htop rsync`.
 
 ### Проброс портов
 
@@ -221,9 +298,9 @@ upgrade; старый дубль `/etc/sysctl.d/98-nanopi-conntrack.conf` уда
 /opt/nanopi-edge/scripts/hairpin-dns-refresh   # если задан HAIRPIN_DNS_TARGET
 /opt/nanopi-edge/scripts/inbound-status | jq . # мобильный VLESS (без секретов)
 
-# DNS клиентов (dnsmasq → sing-box)
+# DNS клиентов (dnsmasq → AdGuard:53 → перехват sing-box)
 dig @10.10.10.1 google.com +short
-dig @127.0.0.1 -p 5353 google.com +short   # напрямую в sing-box dns-in
+journalctl -u sing-box -n 50 | grep -i dns   # какой сервер (dns-proxy/dns-direct) ответил
 
 # обновить edge (scripts/бинарь; config.json не трогает)
 # NANOPI_YES=1 bash install-singbox.sh

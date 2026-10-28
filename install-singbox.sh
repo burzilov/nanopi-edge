@@ -644,31 +644,19 @@ prompt_hairpin_dns() {
   fi
 }
 
-build_singbox_config() {
-  local nodes_file="$1" secret="$2" default_tag="$3"
-  local tpl="$OPT_ROOT/templates/sing-box.config.json.tpl"
-  local tmp rendered
-
-  explain \
-    "Соберу единый ${SB_CFG} из шаблона + узлы VLESS (мастер).
-TUN, AdGuard DoH, remote ruleset’ы, selector proxy, clash_api.
-IP узлов (IPv4) и AdGuard — direct (антипетля).
-Если есть ${MOBILE_VLESS_STATE} (мобильный VLESS) — восстановлю inbound." \
-    "sing-box check успешен; mode 0600"
-
-  [[ -f "$tpl" ]] || die "нет шаблона ${tpl} (обнови scripts bundle)"
-
-  if [[ -f "$SB_CFG" ]]; then
-    local bak="${SB_CFG}.bak.$(date +%Y%m%d%H%M%S)"
-    cp -a "$SB_CFG" "$bak"
-    info "Бэкап конфига: $bak"
-  fi
-
-  mkdir -p "$SB_DIR"
-  tmp=$(mktemp)
+# Рендер config.json из шаблона + узлов VLESS → stdout (без записи в /etc; тестируется отдельно).
+#   render_singbox_config <template> <nodes.json> <clash_secret> <default_tag> <wan_if>
+# - outbounds: direct + vless-узлы + selector proxy;
+# - IPv4 узлов → ОДНО отдельное правило route direct сразу после ip_is_private
+#   (клиенты LAN к VPS — мимо туннеля); в другие ip_cidr (reject 169.254/16, DNS IP) не попадают;
+# - domain_suffix первого route-правила outbound=proxy (его правит WebUI) копируется
+#   в DNS-правило server=dns-proxy с domain_suffix — один источник списка доменов.
+render_singbox_config() {
+  local tpl="$1" nodes_file="$2" secret="$3" default_tag="$4" wan_if="$5"
+  local rendered
   rendered=$(mktemp)
-  # Плейсхолдеры @WAN_IF@ / @CLASH_SECRET@ — остальное (outbounds, VPS /32) через jq.
-  sed -e "s/@WAN_IF@/${WAN_IF}/g" \
+  # Плейсхолдеры @WAN_IF@ / @CLASH_SECRET@ — остальное через jq.
+  sed -e "s/@WAN_IF@/${wan_if}/g" \
       -e "s/@CLASH_SECRET@/${secret}/g" \
       "$tpl" >"$rendered"
 
@@ -677,7 +665,7 @@ IP узлов (IPv4) и AdGuard — direct (антипетля).
     --arg default "$default_tag" \
     --slurpfile base "$rendered" '
     ($nodes[0]) as $n |
-    ($n | map(select(.server | test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$")) | .server + "/32")) as $vps_cidrs |
+    ($n | map(select(.server | test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$")) | .server + "/32") | unique) as $vps_cidrs |
     ($base[0]
       | .outbounds = (
           [ { type: "direct", tag: "direct" } ]
@@ -708,15 +696,57 @@ IP узлов (IPv4) и AdGuard — direct (антипетля).
             }]
         )
       | .route.rules = (
-          .route.rules
-          | map(
-              if .ip_cidr then .ip_cidr += $vps_cidrs else . end
-            )
+          .route.rules as $r
+          | if ($vps_cidrs | length) == 0 then $r
+            else
+              ($r | map(.ip_is_private == true) | index(true)) as $i
+              | { action: "route", outbound: "direct", ip_cidr: $vps_cidrs } as $vps
+              | if $i == null then [$vps] + $r
+                else $r[:($i + 1)] + [$vps] + $r[($i + 1):]
+                end
+            end
         )
+      | ([.route.rules[] | select(.outbound == "proxy" and has("domain_suffix"))][0].domain_suffix // []) as $pd
+      | if .dns.rules then
+          .dns.rules = [
+            .dns.rules[]
+            | if (.server == "dns-proxy" and has("domain_suffix")) then
+                (if ($pd | length) > 0 then .domain_suffix = $pd else empty end)
+              else . end
+          ]
+        else . end
     )
-  ' >"$tmp"
-  mv "$tmp" "$SB_CFG"
+  '
+  local rc=$?
   rm -f "$rendered"
+  return $rc
+}
+
+build_singbox_config() {
+  local nodes_file="$1" secret="$2" default_tag="$3"
+  local tpl="$OPT_ROOT/templates/sing-box.config.json.tpl"
+  local tmp
+
+  explain \
+    "Соберу единый ${SB_CFG} из шаблона + узлы VLESS (мастер).
+TUN, DNS: AdGuard DoH через proxy (фолбэк — напрямую), remote ruleset’ы, selector proxy, clash_api.
+IP узлов (IPv4) — отдельное правило direct (клиенты LAN к VPS мимо туннеля).
+Если есть ${MOBILE_VLESS_STATE} (мобильный VLESS) — восстановлю inbound." \
+    "sing-box check успешен; mode 0600"
+
+  [[ -f "$tpl" ]] || die "нет шаблона ${tpl} (обнови scripts bundle)"
+
+  if [[ -f "$SB_CFG" ]]; then
+    local bak="${SB_CFG}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "$SB_CFG" "$bak"
+    info "Бэкап конфига: $bak"
+  fi
+
+  mkdir -p "$SB_DIR"
+  tmp=$(mktemp)
+  render_singbox_config "$tpl" "$nodes_file" "$secret" "$default_tag" "$WAN_IF" >"$tmp" \
+    || { rm -f "$tmp"; die "не удалось собрать config.json из шаблона"; }
+  mv "$tmp" "$SB_CFG"
   chmod 600 "$SB_CFG"
 
   apply_mobile_vless_inbound
@@ -1057,7 +1087,8 @@ print_cutover() {
 
 1) Клиенты роутера — убрать «старый» gateway/DNS
    • Gateway = сам роутер (обычно 192.168.1.1), НЕ старый прокси/VM.
-   • DNS клиентов = 10.10.10.1 (NanoPi): dnsmasq → sing-box :5353 (DoH, race).
+   • DNS клиентов = 10.10.10.1 (NanoPi): dnsmasq → 94.140.14.14/15.15:53, sing-box перехватывает
+     (hijack-dns) и резолвит через AdGuard DoH по proxy (фолбэк — напрямую; .ru/.su/.рф — напрямую).
      HAIRPIN_DNS_TARGET — подмена A белого WAN → NPM в LAN.
 
 2) Роутерный профиль на NanoPi (lab-кабель ещё можно не трогать)
@@ -1296,4 +1327,5 @@ main() {
   esac
 }
 
-main "$@"
+# NANOPI_INSTALL_LIB_ONLY=1 — только подключить функции (тесты), без main.
+[[ -n "${NANOPI_INSTALL_LIB_ONLY:-}" ]] || main "$@"

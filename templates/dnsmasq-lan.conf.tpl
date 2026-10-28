@@ -16,5 +16,9 @@ dhcp-option=option:router,10.10.10.1
 dhcp-option=option:dns-server,10.10.10.1
 
 no-resolv
-# Клиентский DNS → sing-box (inbound dns-in :5353); upstream DoH — в config.json
-server=127.0.0.1#5353
+# Upstream — AdGuard DNS (UDP/53). Пока sing-box жив, эти запросы перехватывает TUN
+# (route-правило port 53 → hijack-dns) и резолвит sing-box: AdGuard DoH через proxy,
+# фолбэк — тот же AdGuard напрямую; .ru/.su/.рф — напрямую (см. dns в config.json).
+# dnsmasq связан с sing-box через Requires= (drop-in): systemctl stop sing-box гасит и dnsmasq.
+server=94.140.14.14
+server=94.140.15.15

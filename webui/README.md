@@ -10,8 +10,9 @@ API: `GET|POST /api/wan` → скрипты `wan-status` / `wan-dhcp` / `wan-ppp
 целиком (LAN trust).
 
 Домены → proxy и секция `dns` в `/etc/sing-box/config.json` правятся в панели
-**Конфиг** (или вручную): домены — правило `outbound=proxy` + `domain_suffix`;
-DNS — `dns.servers` / `dns.rules`. Перед перезапуском — `sing-box check`.
+**Конфиг** (или вручную): домены — правило `outbound=proxy` + `domain_suffix`
+(страница **Домены** пишет тот же список и в DNS-правило `server=dns-proxy`, если оно есть;
+пустой список не сохраняется); DNS — `dns.servers` / `dns.rules`. Перед перезапуском — `sing-box check`.
 
 **Проброс портов:** страница `/port-forwards` — общая таблица правил DNAT
 (вкл/выкл, TCP/UDP/оба, внешний порт → внутренний IP:порт, комментарий), столбец
