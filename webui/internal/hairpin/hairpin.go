@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"nanopi-webui/internal/config"
+	"nanopi-webui/internal/netif"
 )
 
 const (
@@ -54,13 +55,18 @@ func GetTarget() (string, error) {
 }
 
 func WanIPv4s() []string {
-	wanIF := "end0"
+	wanIF := ""
 	if v, ok, _ := config.GetKV(EnvPath(), "WAN_IF"); ok && v != "" {
 		wanIF = v
+	} else {
+		wanIF = netif.DefaultRouteIface()
 	}
 	seen := map[string]struct{}{}
 	var out []string
 	for _, ifc := range []string{wanIF, "ppp0"} {
+		if ifc == "" {
+			continue
+		}
 		for _, ip := range addrsOn(ifc) {
 			if _, ok := seen[ip]; ok {
 				continue

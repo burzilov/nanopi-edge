@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"nanopi-webui/internal/netif"
 )
 
 const (
@@ -397,9 +399,13 @@ func readEnv() map[string]string {
 // WanInterfaces — интерфейсы, с которых принимать DNAT (WAN ethernet, ppp0, VLAN).
 func WanInterfaces() []string {
 	env := readEnv()
-	wan := "end0"
-	if v := env["WAN_IF"]; v != "" {
-		wan = v
+	wan := env["WAN_IF"]
+	if wan == "" {
+		// .env без WAN_IF (не должно быть после install-singbox.sh): default route
+		wan = netif.DefaultRouteIface()
+	}
+	if wan == "" {
+		return []string{"ppp0"}
 	}
 	out := []string{wan, "ppp0"}
 	if vlan := env["PPPOE_VLAN"]; vlan != "" {
@@ -415,12 +421,16 @@ func LanInterface() string {
 	if v := readEnv()["LAN_IF"]; v != "" {
 		return v
 	}
-	return "enp1s0"
+	return "" // .env без LAN_IF — LanCIDR вернёт DefaultLanCIDR
 }
 
 // LanCIDR — сеть LAN NanoPi (обычно 10.10.10.0/24).
 func LanCIDR() string {
-	out, err := runCmd("ip", "-4", "-o", "addr", "show", "dev", LanInterface())
+	lan := LanInterface()
+	if lan == "" {
+		return DefaultLanCIDR
+	}
+	out, err := runCmd("ip", "-4", "-o", "addr", "show", "dev", lan)
 	if err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			fields := strings.Fields(line)
@@ -473,7 +483,7 @@ func RenderNft(s Store, wanIfaces []string) string {
 	fmt.Fprintf(&b, "delete table inet %s\n", TableName)
 	fmt.Fprintf(&b, "table inet %s {\n", TableName)
 	if len(wanIfaces) == 0 {
-		wanIfaces = []string{"end0", "ppp0"}
+		wanIfaces = WanInterfaces()
 	}
 	ifaceList := quoteIfaceSet(wanIfaces)
 

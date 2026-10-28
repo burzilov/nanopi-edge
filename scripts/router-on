@@ -9,14 +9,28 @@ nanopi_load_env
 echo "==> router-on"
 echo "    Кабели: ISP→WAN(${WAN_IF}), LAN(${LAN_IF})→WAN роутера."
 echo "    LAN: DHCP + PPPoE-server (accept-any). WAN по умолчанию DHCP."
-echo "    SSH может моргнуть на netplan apply."
+echo "    Сеть: $(nanopi_net_stack). SSH может моргнуть при применении сети."
+nanopi_net_require_stack
+if [[ "${SSH_ALLOW_WAN:-0}" != "1" ]]; then
+  echo "    SSH с WAN (${WAN_IF}/ppp0) после router-on закрыт для НОВЫХ подключений"
+  echo "    (порт: $(nanopi_ssh_ports | paste -sd, -)); текущая сессия не рвётся."
+  echo "    Дальше заходи с LAN: ssh root@10.10.10.1. Оставить открытым: SSH_ALLOW_WAN=1 в ${ENV_FILE}."
+  # текущая SSH-сессия пришла на адрес WAN?
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    _local_ip=$(awk '{print $3}' <<<"$SSH_CONNECTION")
+    if ip -o addr show dev "$WAN_IF" 2>/dev/null | grep -qw -- "${_local_ip}"; then
+      echo "    ВНИМАНИЕ: ты сейчас подключён через WAN (${_local_ip}). Не закрывай сессию,"
+      echo "    пока не проверишь вход с LAN (10.10.10.1) — новый вход с WAN будет закрыт."
+    fi
+  fi
+fi
 
 if [[ "${NANOPI_YES:-}" != "1" ]]; then
   read -r -p "Продолжить? [y/N]: " reply || true
   [[ "${reply:-}" =~ ^[Yy]$ ]] || exit 0
 fi
 
-rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml"
+# wan-dhcp сам убирает lab-файл (30-ethernets-dhcp) и применяет сеть
 "$SCRIPT_DIR/wan-dhcp"
 
 echo "[ok] router-on. Проверь: ip -br addr; ${LAN_IF}=10.10.10.1; wan-status"

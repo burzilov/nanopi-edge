@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,8 +17,16 @@ import (
 	"nanopi-webui/internal/config"
 )
 
+// WebUIArchiveAsset — архив бинаря под архитектуру, под которую собрана панель
+// (nanopi-webui-linux-amd64.tar.gz / nanopi-webui-linux-arm64.tar.gz).
+var WebUIArchiveAsset = WebUIArchiveAssetFor(runtime.GOARCH)
+
+// WebUIArchiveAssetFor — имя ассета релиза для GOARCH.
+func WebUIArchiveAssetFor(goarch string) string {
+	return "nanopi-webui-linux-" + goarch + ".tar.gz"
+}
+
 const (
-	WebUIArchiveAsset = "nanopi-webui-linux-arm64.tar.gz"
 	WebUIScriptAsset  = "install-webui.sh"
 	EdgeScriptAsset   = "install-singbox.sh"
 	EdgeScriptsAsset  = "nanopi-edge-scripts.tar.gz"
@@ -26,7 +35,7 @@ const (
 )
 
 // Legacy name used in older messages / checks for the binary archive.
-const WebUIAssetName = WebUIArchiveAsset
+var WebUIAssetName = WebUIArchiveAsset
 
 type ComponentStatus struct {
 	Current         string `json:"current"`
@@ -191,6 +200,9 @@ func CompareSemver(a, b string) int {
 	return 0
 }
 
+// fetchLatestRelease — подменяется в тестах.
+var fetchLatestRelease = fetchLatest
+
 func fetchLatest(repo string) (ghRelease, error) {
 	return fetchRelease(repo, "")
 }
@@ -254,7 +266,7 @@ func Check(repo, webuiCurrent, edgeCurrent string) (CheckResult, error) {
 	if edgeCurrent == "" {
 		out.Edge.Current = "unknown"
 	}
-	rel, err := fetchLatest(repo)
+	rel, err := fetchLatestRelease(repo)
 	if err != nil {
 		return out, err
 	}

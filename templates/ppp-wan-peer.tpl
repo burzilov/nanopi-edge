@@ -1,5 +1,5 @@
 # NanoPi WAN PPPoE client → ISP
-plugin rp-pppoe.so
+plugin @PPPOE_PLUGIN@
 @NIC@
 user "@PPPOE_USER@"
 noipdefault

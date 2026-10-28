@@ -41,31 +41,46 @@ jobs:
             echo "version=v${v}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build linux/arm64
+      - name: Go vet + test
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build linux/amd64 + linux/arm64
         env:
           CGO_ENABLED: "0"
           GOTOOLCHAIN: auto
         run: |
           VER="${{ steps.ver.outputs.version }}"
           mkdir -p dist
-          GOOS=linux GOARCH=arm64 go build -trimpath \
-            -ldflags="-s -w -X main.Version=${VER}" \
-            -o dist/nanopi-webui .
-          file dist/nanopi-webui || true
+          for ARCH in amd64 arm64; do
+            GOOS=linux GOARCH=$ARCH go build -trimpath \
+              -ldflags="-s -w -X main.Version=${VER}" \
+              -o "dist/nanopi-webui-${ARCH}" .
+          done
+          file dist/nanopi-webui-*
+          file dist/nanopi-webui-amd64 | grep -q 'x86-64'
+          file dist/nanopi-webui-arm64 | grep -q 'aarch64'
+          ./dist/nanopi-webui-amd64 --version | grep -F "${VER} linux/amd64"
 
-      - name: Pack artifact
+      - name: Pack artifacts
         id: pack
         run: |
           VER="${{ steps.ver.outputs.version }}"
-          STAGE="nanopi-webui-linux-arm64"
-          mkdir -p "/tmp/${STAGE}"
-          cp dist/nanopi-webui "/tmp/${STAGE}/"
-          cp nanopi-webui.service "/tmp/${STAGE}/"
-          printf '%s\n' "$VER" > "/tmp/${STAGE}/VERSION"
-          ARCHIVE="nanopi-webui-linux-arm64.tar.gz"
-          tar -C /tmp -czf "${GITHUB_WORKSPACE}/${ARCHIVE}" "$STAGE"
-          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
-          ls -la "${GITHUB_WORKSPACE}/${ARCHIVE}" \
+          for ARCH in amd64 arm64; do
+            STAGE="nanopi-webui-linux-${ARCH}"
+            rm -rf "/tmp/${STAGE}"
+            mkdir -p "/tmp/${STAGE}"
+            cp "dist/nanopi-webui-${ARCH}" "/tmp/${STAGE}/nanopi-webui"
+            cp nanopi-webui.service "/tmp/${STAGE}/"
+            printf '%s\n' "$VER" > "/tmp/${STAGE}/VERSION"
+            tar -C /tmp -czf "${GITHUB_WORKSPACE}/${STAGE}.tar.gz" "$STAGE"
+          done
+          echo "archive_amd64=nanopi-webui-linux-amd64.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "archive_arm64=nanopi-webui-linux-arm64.tar.gz" >> "$GITHUB_OUTPUT"
+          ls -la "${GITHUB_WORKSPACE}"/nanopi-webui-linux-*.tar.gz \
             "${GITHUB_WORKSPACE}/install-singbox.sh" \
             "${GITHUB_WORKSPACE}/install-webui.sh"
 
@@ -84,13 +99,15 @@ jobs:
           echo "scripts_archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
           tar tzf "${GITHUB_WORKSPACE}/${ARCHIVE}"
           test "$(find /tmp/${STAGE}/scripts -type f | wc -l)" -eq 9
-          test "$(find /tmp/${STAGE}/templates -type f | wc -l)" -eq 19
+          test "$(find /tmp/${STAGE}/templates -type f | wc -l)" -eq 24
 
-      - name: Upload artifact (workflow)
+      - name: Upload artifacts (workflow)
         uses: actions/upload-artifact@v4
         with:
-          name: nanopi-webui-linux-arm64
-          path: ${{ steps.pack.outputs.archive }}
+          name: nanopi-webui-linux
+          path: |
+            ${{ steps.pack.outputs.archive_amd64 }}
+            ${{ steps.pack.outputs.archive_arm64 }}
 
       - name: Upload edge scripts artifact (workflow)
         uses: actions/upload-artifact@v4
@@ -103,16 +120,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ steps.pack.outputs.archive }}
+            ${{ steps.pack.outputs.archive_amd64 }}
+            ${{ steps.pack.outputs.archive_arm64 }}
             ${{ steps.pack_scripts.outputs.scripts_archive }}
             install-singbox.sh
             install-webui.sh
           generate_release_notes: true
           body: |
-            NanoPi edge + WebUI, версия `${{ steps.ver.outputs.version }}`.
+            NanoPi edge + WebUI (amd64 + arm64), версия `${{ steps.ver.outputs.version }}`.
 
             Ассеты:
-            - `nanopi-webui-linux-arm64.tar.gz` — бинарь + unit
+            - `nanopi-webui-linux-amd64.tar.gz` — бинарь + unit (x86_64, Debian 12/13)
+            - `nanopi-webui-linux-arm64.tar.gz` — бинарь + unit (aarch64, NanoPi/Armbian)
             - `nanopi-edge-scripts.tar.gz` — scripts/ + templates (router-on, wan-*, sing-box.service, sysctl)
             - `install-webui.sh` — установщик панели
             - `install-singbox.sh` — установщик / upgrade edge (скачивает scripts bundle)

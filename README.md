@@ -1,6 +1,7 @@
 # nanopi-edge
 
-Edge-роутер на **NanoPi R3S LTS** (Armbian): устройство ставится в разрыв между
+Edge-роутер на **NanoPi R3S LTS** (Armbian, aarch64) или **x86_64-мини-ПК** с двумя
+Ethernet (Debian 12/13, напр. Intel N100): устройство ставится в разрыв между
 кабелем провайдера и домашним роутером. На краю — **sing-box** (TUN + VLESS+Reality),
 минимальный NAT и dual-serve на LAN (DHCP + PPPoE-server).
 
@@ -97,18 +98,112 @@ Upgrade (`install-singbox.sh` повторно) по умолчанию **не**
 
 ## Железо и ОС
 
-|                 |                              |
-| --------------- | ---------------------------- |
-| Плата           | NanoPi R3S LTS (2× Ethernet) |
-| ОС              | Armbian (Debian), aarch64    |
-| Порты (типично) | WAN = `end0`, LAN = `enp1s0` |
-| Сеть на плате   | netplan → systemd-networkd   |
+|                 | NanoPi                       | x86_64 (напр. N100)                        |
+| --------------- | ---------------------------- | ------------------------------------------ |
+| Железо          | NanoPi R3S LTS (2× Ethernet) | мини-ПК с 2× Ethernet                       |
+| ОС              | Armbian (Debian), aarch64    | Debian 12/13, amd64                         |
+| Порты (типично) | WAN = `end0`, LAN = `enp1s0` | WAN = `enp1s0`, LAN = `enp2s0` (как найдёт) |
+| Сеть            | netplan → systemd-networkd   | ifupdown (`/etc/network/interfaces`) + dhcpcd |
+| Ассет панели    | `nanopi-webui-linux-arm64`   | `nanopi-webui-linux-amd64`                  |
+
+Другие архитектуры (armv7, i386, …) не поддерживаются: `install-webui.sh` скажет об
+этом сразу.
+
+### Интерфейсы WAN/LAN
+
+Имена не зашиты. Порядок выбора (`install-singbox.sh`, а при пустом `.env` — и `scripts/`):
+
+1. `NANOPI_WAN_IF` / `NANOPI_LAN_IF` в окружении установщика;
+2. `WAN_IF` / `LAN_IF` из `/opt/nanopi-edge/.env` (upgrade);
+3. автоопределение: **WAN** = интерфейс маршрута по умолчанию (lab-кабель в LAN
+   домашнего роутера), кроме `ppp*`/`tun*`/`sb-*`/`wg*`; **LAN** = первый другой
+   физический проводной Ethernet (`/sys/class/net/*/device`, без Wi‑Fi, мостов и
+   docker).
+
+Мастер показывает таблицу физических интерфейсов и подсказку; при свежей установке
+несуществующее имя, `WAN = LAN` или один NIC без `NANOPI_LAN_IF` — остановка с
+ошибкой. Итог пишется в `.env` и дальше не угадывается.
+
+```bash
+NANOPI_WAN_IF=enp1s0 NANOPI_LAN_IF=enp2s0 bash install-singbox.sh
+```
+
+### Сетевой стек: netplan или ifupdown
+
+`router-on`, `lab-on`, `wan-dhcp`, `wan-pppoe` пишут одни и те же роли файлов в
+активный стек:
+
+| Роль | netplan (`/etc/netplan/`) | ifupdown (`/etc/network/interfaces.d/`) |
+| --- | --- | --- |
+| lab: WAN по DHCP в LAN роутера | `30-ethernets-dhcp.yaml` | `nanopi-30-ethernets-dhcp` |
+| WAN DHCP от ISP / L2 под PPPoE | `40-router-wan-dhcp.yaml` | `nanopi-40-router-wan-dhcp` |
+| WAN + VLAN под PPPoE | `45-router-wan-vlan.yaml` | `nanopi-45-router-wan-vlan` |
+| LAN `10.10.10.1/24` | `50-router-lan.yaml` | `nanopi-50-router-lan` |
+
+Определение: есть `netplan` и `/etc/netplan/*.yaml` → **netplan** (NanoPi — как
+раньше, без изменений); активен NetworkManager → **стоп** (не поддерживается);
+есть `/etc/network/interfaces` и `ifup` → **ifupdown**. Принудительно:
+`NET_STACK=netplan|ifupdown` (окружение установщика → запишется в `.env`).
+
+ifupdown (Debian без netplan):
+
+- в `/etc/network/interfaces` стензы WAN/LAN (и `WAN.*`) комментируются префиксом
+  `#nanopi-edge# `, `iface WAN inet6 …` остаётся; оригинал один раз сохраняется в
+  `/etc/network/interfaces.nanopi-orig`; добавляется `source /etc/network/interfaces.d/*`;
+- перед каждой сменой профиля — снимок `/etc/network/interfaces` + `interfaces.d/` в
+  `/var/backups/nanopi-edge/net-*` (хранятся 10 последних);
+- переподнимаются **только** интерфейсы, чья стенза изменилась: в lab WAN по DHCP
+  совпадает с дефолтом Debian, поэтому `router-on` не рвёт SSH по WAN-кабелю;
+- `ifup` упал → файлы откатываются из снимка, интерфейсы поднимаются по-старому,
+  скрипт завершается с ошибкой. Таймерного авто-отката (если связь пропала, а `ifup`
+  «успешен») нет — держите консоль/второй путь при первой врезке.
+
+Ручной откат к исходному Debian:
+
+```bash
+cp /etc/network/interfaces.nanopi-orig /etc/network/interfaces
+rm -f /etc/network/interfaces.d/nanopi-*
+systemctl restart networking   # или ifdown/ifup нужных интерфейсов
+```
+
+DHCP-клиент для `inet dhcp`: если нет `dhcpcd`/`dhclient`/`udhcpc`, установщик
+ставит `dhcpcd-base`.
+
+### Пакеты
+
+`install-singbox.sh` сам ставит недостающее через apt (неинтерактивно, конфиги
+не перетирает): `curl jq ca-certificates nftables dnsmasq ppp pppoe openssl
+iproute2 procps kmod tar gzip` (+ `dhcpcd-base` на ifupdown).
+`install-webui.sh` при отсутствии ставит `curl`, `jq`, `ca-certificates`.
+
+Если **sing-box стоит пакетом** (`dpkg`: `sing-box` / `sing-box-beta`) — свежая
+установка предупреждает и останавливается: пакетный `/usr/bin/sing-box` и его unit
+конфликтуют с нашим `/usr/local/bin/sing-box`. Удалить пакет: вручную
+`apt-get remove sing-box`, ответ «да» в мастере или `NANOPI_REMOVE_SINGBOX_PKG=1`
+(`remove`, не `purge`; `/etc/sing-box` предварительно копируется в
+`/etc/sing-box.bak-*`). При upgrade уже работающей установки — только предупреждение.
+
+PPPoE-клиент: плагин pppd выбирается по наличию — `pppoe.so` (ppp ≥ 2.5, Debian 13)
+или `rp-pppoe.so` (старые ppp, Armbian на bookworm).
+
+### SSH с WAN
+
+`router-on` (и upgrade в router-режиме) пишет в `/etc/nftables.conf` цепочку
+`input`: **новые** TCP-соединения на порт(ы) sshd с WAN и `ppp0` — `drop`
+(порты из `sshd -T`, иначе 22). Уже открытая сессия не рвётся, остальной входящий
+трафик не меняется (policy accept). После врезки заходить с LAN:
+`ssh root@10.10.10.1`. `router-on` предупреждает, если текущая SSH-сессия идёт
+через WAN.
+
+Оставить SSH с WAN открытым (на свой риск; лучше ключи и нестандартный порт):
+`SSH_ALLOW_WAN=1` в `/opt/nanopi-edge/.env`, затем `router-on` (или
+`SSH_ALLOW_WAN=1` в окружении установщика). Проверка: `nft list chain inet filter input`.
 
 ## Быстрый старт
 
 ### 1. Edge (sing-box)
 
-На **чистой** Armbian, пока WAN NanoPi в LAN домашнего роутера (lab, нужны
+На **чистой** Armbian (NanoPi) или Debian 12/13 (x86_64), пока WAN в LAN домашнего роутера (lab, нужны
 **интернет и SSH**). Установщик скачивает `nanopi-edge-scripts.tar.gz` с GitHub
 Release — для первой установки нужен уже опубликованный тег с этим ассетом.
 
@@ -161,6 +256,10 @@ bash install-singbox.sh
 | `NANOPI_VLESS_LINKS_FILE` | файл с такими строками (`#` — комментарий); лучше `0600` |
 | `NANOPI_VLESS_DEFAULT` | default для `proxy` (иначе первый узел) |
 | `NANOPI_HAIRPIN_DNS_TARGET` | hairpin, только если в `.env` его ещё нет |
+| `NANOPI_WAN_IF` / `NANOPI_LAN_IF` | имена WAN/LAN (иначе `.env` или автоопределение) |
+| `NANOPI_REMOVE_SINGBOX_PKG=1` | разрешить `apt-get remove` пакетного sing-box |
+| `NET_STACK` | `netplan` \| `ifupdown` — стек сети принудительно |
+| `SSH_ALLOW_WAN=1` | не закрывать SSH с WAN в nftables |
 
 `NANOPI_YES=1` без ссылок при необходимости собрать `config.json` — понятная ошибка.
 При upgrade существующий `config.json` по умолчанию не трогается, ссылки не нужны.
@@ -237,7 +336,8 @@ bash install-webui.sh
 
 Руками:
 
-1. Armbian, доступ root по SSH (ключ); настройки sshd — по вкусу.
+1. Armbian (NanoPi) или Debian 12/13 amd64, доступ root по SSH (ключ); настройки sshd —
+   по вкусу. SSH с WAN после `router-on` закрыт (см. «SSH с WAN»).
 2. Мастер VLESS в `install-singbox.sh`: для каждого VPS — ссылка `vless://` из
    3x-ui (или поля вручную), имя узла; выбор узла по умолчанию. Hairpin — там же,
    шаг 6b: LAN IP Nginx Proxy Manager (Enter — пропустить).
@@ -317,7 +417,7 @@ DNS hairpin (`HAIRPIN_DNS_TARGET` в `.env`, спрашивает `install-singb
 | -------------------- | ---------------------------------------------------- |
 | `install-singbox.sh` | Установка / upgrade edge (скачивает scripts bundle)    |
 | `scripts/`           | Операционные скрипты (в релизе: `nanopi-edge-scripts.tar.gz`) |
-| `templates/`         | Шаблоны (dnsmasq, netplan, sing-box.config.json.tpl, …) |
+| `templates/`         | Шаблоны (dnsmasq, netplan, ifupdown, nftables, sing-box.config.json.tpl, …) |
 | `lab/`               | Fake ISP/CPE и чеклист PPPoE-стенда                  |
 | `install-webui.sh`   | Установка панели с GitHub Release                    |
 | `tests/`             | Shell-тесты установщиков (`bash tests/*.test.sh`)     |
@@ -374,9 +474,15 @@ Lab без PPPoE у домашнего ISP: [`lab/CHECKLIST.md`](lab/CHECKLIST.m
 
 ```bash
 cd webui
-make build          # → dist/nanopi-webui
-make build-arm64    # кросс для платы
+make build          # → dist/nanopi-webui (под текущую машину)
+make build-arm64    # → dist/nanopi-webui-linux-arm64 (NanoPi)
+make build-amd64    # → dist/nanopi-webui-linux-amd64 (x86_64)
+make build-all      # оба
+./dist/nanopi-webui --version   # nanopi-webui vX.Y.Z linux/amd64
 ```
+
+Тесты: `bash tests/*.test.sh` (без root и платы: сетевой слой, установщики),
+`cd webui && go vet ./... && go test ./...`.
 
 Подробности: [`webui/README.md`](webui/README.md).
 
@@ -387,7 +493,10 @@ make build-arm64    # кросс для платы
 ./release.sh          # например 0.0.0 → 0.0.1, tag v0.0.1, push
 ```
 
-Actions соберёт артефакты (`nanopi-webui-linux-arm64.tar.gz`, `nanopi-edge-scripts.tar.gz`, установщики) и приложит к GitHub Release.
+Actions прогонит `go vet`/`go test`, соберёт артефакты (`nanopi-webui-linux-amd64.tar.gz`,
+`nanopi-webui-linux-arm64.tar.gz`, `nanopi-edge-scripts.tar.gz`, `install-singbox.sh`,
+`install-webui.sh`) и приложит к GitHub Release. Панель и `install-webui.sh` берут
+архив своей архитектуры (`runtime.GOARCH` / `uname -m`).
 
 ## Лицензия
 

@@ -2,11 +2,13 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 
 	"nanopi-webui/internal/clash"
@@ -26,6 +28,10 @@ var tmplFS embed.FS
 var staticFS embed.FS
 
 func main() {
+	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "-version" || os.Args[1] == "version") {
+		fmt.Printf("nanopi-webui %s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
+		return
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "--apply-update" {
 		if len(os.Args) < 3 || strings.TrimSpace(os.Args[2]) == "" {
 			log.Fatal("usage: nanopi-webui --apply-update <tag>")

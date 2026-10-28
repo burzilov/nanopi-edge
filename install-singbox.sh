@@ -1,5 +1,6 @@
 #!/bin/bash
-# install-singbox.sh — установка и безопасное обновление NanoPi R3S LTS (edge).
+# install-singbox.sh — установка и безопасное обновление edge-роутера
+# (NanoPi R3S LTS / aarch64 Armbian или x86_64 Debian, напр. N100).
 #
 #   bash install-singbox.sh           # fresh или upgrade (авто)
 #   bash install-singbox.sh status
@@ -12,6 +13,11 @@
 #   NANOPI_VLESS_LINKS_FILE   файл с такими строками (# — комментарий)
 #   NANOPI_VLESS_DEFAULT      default для selector proxy (иначе — первый узел)
 #   NANOPI_HAIRPIN_DNS_TARGET LAN IP для hairpin DNS, если в .env его ещё нет
+#   NANOPI_WAN_IF / NANOPI_LAN_IF  имена WAN/LAN (иначе .env или автоопределение:
+#                             WAN = интерфейс default route, LAN = другой физический Ethernet)
+#   NANOPI_REMOVE_SINGBOX_PKG=1  разрешить apt-get remove пакета sing-box (dpkg), если он стоит
+#   NET_STACK=netplan|ifupdown   стек сети принудительно (иначе автоопределение; запишется в .env)
+#   SSH_ALLOW_WAN=1           не закрывать SSH с WAN в nftables (запишется в .env)
 #
 # Повторный запуск не гасит router-режим (dnsmasq/nftables) и по умолчанию
 # не пересобирает /etc/sing-box/config.json.
@@ -38,8 +44,8 @@ EDGE_GITHUB_REPO="${WEBUI_GITHUB_REPO:-${EDGE_GITHUB_REPO:-burzilov/nanopi-edge}
 SCRIPTS_ASSET=nanopi-edge-scripts.tar.gz
 _SCRIPTS_INSTALL_TMP=
 
-WAN_IF=end0
-LAN_IF=enp1s0
+WAN_IF=""
+LAN_IF=""
 CLASH_SECRET_VALUE=""
 # fresh | upgrade — выставляет detect_install_mode
 INSTALL_MODE=fresh
@@ -112,8 +118,8 @@ load_env() {
   local keep_edge_version="${EDGE_VERSION:-}"
   # shellcheck disable=SC1090
   source "$OPT_ENV"
-  WAN_IF=${WAN_IF:-end0}
-  LAN_IF=${LAN_IF:-enp1s0}
+  WAN_IF=${WAN_IF:-}
+  LAN_IF=${LAN_IF:-}
   if [[ -n "$keep_edge_version" ]]; then
     EDGE_VERSION="$keep_edge_version"
   fi
@@ -187,14 +193,135 @@ show_inventory() {
   echo
   echo "Backend сети:"
   systemctl is-active systemd-networkd NetworkManager 2>/dev/null || true
+  echo "Сетевой стек для scripts/: $(detect_net_stack)"
+  echo
+  echo "Физические Ethernet:"
+  show_physical_ifaces
+}
+
+# --- интерфейсы: автоопределение (те же правила, что scripts/common.sh) ---
+
+# Интерфейс default route (IPv4), кроме ppp*/tun*/sb-*/wg*/lo.
+default_route_if() {
+  ip -4 route show default 2>/dev/null | awk '
+    { for (i = 1; i < NF; i++) if ($i == "dev") { d = $(i + 1)
+        if (d !~ /^(ppp|tun|tap|sb-|wg|lo)/) { print d; exit } } }'
+}
+
+# Физические проводные Ethernet (есть device/, не Wi-Fi, ARPHRD_ETHER).
+physical_ifaces() {
+  local root="${NANOPI_SYS_CLASS_NET:-/sys/class/net}" d n
+  for d in "$root"/*; do
+    n=${d##*/}
+    [[ -e "$d/device" ]] || continue
+    [[ -e "$d/wireless" || -e "$d/phy80211" ]] && continue
+    [[ "$(cat "$d/type" 2>/dev/null)" == "1" ]] || continue
+    echo "$n"
+  done
+}
+
+guess_lan_if() {
+  local wan="$1" n
+  while read -r n; do
+    [[ -n "$n" && "$n" != "$wan" ]] && { echo "$n"; return 0; }
+  done < <(physical_ifaces)
+  return 0
+}
+
+show_physical_ifaces() {
+  local root="${NANOPI_SYS_CLASS_NET:-/sys/class/net}" n carrier mac def
+  def=$(default_route_if)
+  while read -r n; do
+    [[ -n "$n" ]] || continue
+    carrier=$(cat "$root/$n/carrier" 2>/dev/null || echo "?")
+    case "$carrier" in 1) carrier="кабель есть" ;; 0) carrier="нет кабеля" ;; *) carrier="link down" ;; esac
+    mac=$(cat "$root/$n/address" 2>/dev/null || echo "?")
+    printf '  %-12s %-17s %-12s %s\n' "$n" "$mac" "$carrier" "$([[ "$n" == "$def" ]] && echo "← default route")"
+  done < <(physical_ifaces)
+}
+
+# netplan | ifupdown | networkmanager | unknown (как nanopi_net_stack в common.sh).
+detect_net_stack() {
+  case "${NET_STACK:-}" in netplan|ifupdown) echo "$NET_STACK"; return 0 ;; esac
+  if command -v netplan >/dev/null 2>&1 && compgen -G "${NETPLAN_DIR}/*.yaml" >/dev/null; then
+    echo netplan
+  elif systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    echo networkmanager
+  elif [[ -f /etc/network/interfaces ]] && command -v ifup >/dev/null 2>&1; then
+    echo ifupdown
+  elif command -v netplan >/dev/null 2>&1; then
+    echo netplan
+  else
+    echo unknown
+  fi
+}
+
+# Стек сети должен поддерживаться scripts/ (router-on, wan-*, lab-on).
+check_net_stack() {
+  local st
+  st=$(detect_net_stack)
+  case "$st" in
+    netplan|ifupdown) ok "сетевой стек: ${st}" ;;
+    networkmanager)
+      die "сетью управляет NetworkManager — router-on/wan-* его не поддерживают.
+Нужен netplan (networkd) или Debian ifupdown (/etc/network/interfaces).
+Если уверен, задай NET_STACK=netplan|ifupdown в окружении." ;;
+    *) die "не найден сетевой стек (нужен netplan или ifupdown)" ;;
+  esac
+}
+
+# sing-box из apt/.deb конфликтует с нашим ${SINGBOX_BIN} и unit:
+# apt upgrade перезапишет /usr/bin/sing-box и unit пакета. Стоп или remove.
+check_singbox_pkg() {
+  command -v dpkg-query >/dev/null 2>&1 || return 0
+  local pkg found=""
+  for pkg in sing-box sing-box-beta; do
+    if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+      found+=" $pkg"
+    fi
+  done
+  [[ -n "$found" ]] || return 0
+  found=${found# }
+  echo
+  echo "    ВНИМАНИЕ: sing-box установлен пакетом (dpkg): ${found}"
+  echo "    Установщик ставит свой бинарь ${SINGBOX_BIN} и unit ${UNIT_DST};"
+  echo "    пакетный /usr/bin/sing-box и его unit будут конфликтовать (apt upgrade, автозапуск)."
+  echo "    Рекомендация: apt-get remove ${found}  (без purge — /etc/sing-box сохранится)."
+  if [[ "${NANOPI_REMOVE_SINGBOX_PKG:-}" == "1" ]] \
+     || { [[ "${NANOPI_YES:-}" != "1" ]] && yesno "Удалить пакет(ы) ${found} сейчас (apt-get remove, без purge)?" n; }; then
+    local bak
+    if [[ -d "$SB_DIR" ]]; then
+      bak="${SB_DIR}.bak-$(date +%Y%m%d-%H%M%S)"
+      cp -a "$SB_DIR" "$bak" && ok "копия ${SB_DIR} → ${bak}"
+    fi
+    systemctl disable --now sing-box 2>/dev/null || true
+    export DEBIAN_FRONTEND=noninteractive
+    # shellcheck disable=SC2086
+    apt-get remove -y $found
+    ok "пакет(ы) ${found} удалены"
+    return 0
+  fi
+  if [[ "$INSTALL_MODE" == "upgrade" ]]; then
+    # уже работающую установку (в т.ч. upgrade из панели) не роняем — только предупреждение
+    echo "    WARN: upgrade продолжается; удали пакет вручную, когда будет удобно"
+    return 0
+  fi
+  die "останавливаюсь: сначала удали пакет sing-box (apt-get remove ${found})
+или запусти с NANOPI_REMOVE_SINGBOX_PKG=1"
 }
 
 cmd_status() {
   load_env
   echo "WAN_IF=$WAN_IF  LAN_IF=$LAN_IF"
   echo "OPT_ENV=$OPT_ENV"
-  echo "=== netplan ==="
-  ls -la "$NETPLAN_DIR"/*.yaml 2>/dev/null || true
+  local st
+  st=$(detect_net_stack)
+  echo "=== сеть: ${st} ==="
+  if [[ "$st" == ifupdown ]]; then
+    ls -la /etc/network/interfaces /etc/network/interfaces.d/ 2>/dev/null || true
+  else
+    ls -la "$NETPLAN_DIR"/*.yaml 2>/dev/null || true
+  fi
   echo "=== addr ==="
   ip -br addr
   echo "=== route ==="
@@ -244,7 +371,9 @@ ensure_download_deps() {
   info "Ставлю curl/jq для скачивания scripts bundle"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y --no-install-recommends curl jq ca-certificates
+  apt-get install -y --no-install-recommends \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+    curl jq ca-certificates
 }
 
 download_scripts_bundle() {
@@ -382,22 +511,38 @@ inbound-status, common.sh) + templates (sing-box.service, sysctl)." \
 
 install_packages() {
   detect_router_live
+  local -a pkgs=(curl jq ca-certificates nftables dnsmasq ppp pppoe openssl
+    iproute2 procps kmod tar gzip)
+  # ifupdown: нужен DHCP-клиент для «inet dhcp» (Debian 13 — dhcpcd-base)
+  if [[ "$(detect_net_stack)" == ifupdown ]] \
+     && ! command -v dhcpcd >/dev/null 2>&1 && ! command -v dhclient >/dev/null 2>&1 \
+     && ! command -v udhcpc >/dev/null 2>&1; then
+    pkgs+=(dhcpcd-base)
+  fi
+  local missing=() p
+  for p in "${pkgs[@]}"; do
+    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || missing+=("$p")
+  done
   if [[ "$ROUTER_LIVE" -eq 1 ]]; then
     explain \
-      "apt update и пакеты: curl, jq, ca-certificates, nftables, dnsmasq, ppp, pppoe, openssl.
+      "apt update и пакеты: ${pkgs[*]}.
 Router-режим уже активен — dnsmasq/nftables НЕ останавливаю и не mask." \
       "Пакеты на месте; LAN dual-serve без простоя"
   else
     explain \
-      "apt update и минимум пакетов: curl, jq, ca-certificates, nftables, dnsmasq, ppp, pppoe, openssl.
+      "apt update и минимум пакетов: ${pkgs[*]}.
 nftables/dnsmasq сразу выключу — в lab не должны слушать LAN роутера." \
       "Пакеты на месте; dnsmasq masked; nftables не active до router-on."
   fi
 
   export DEBIAN_FRONTEND=noninteractive
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    info "Не хватает пакетов: ${missing[*]}"
+  fi
   apt-get update -y
   apt-get install -y --no-install-recommends \
-    curl jq ca-certificates nftables dnsmasq ppp pppoe openssl
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+    "${pkgs[@]}"
 
   if [[ "$ROUTER_LIVE" -eq 1 ]]; then
     info "router live — пропускаю disable nftables / mask dnsmasq"
@@ -493,6 +638,9 @@ write_dotenv_merge() {
   fi
   env_set_kv WAN_IF "$WAN_IF"
   env_set_kv LAN_IF "$LAN_IF"
+  # явный выбор стека/SSH из окружения — запомнить для scripts/ (router-on, wan-*)
+  case "${NET_STACK:-}" in netplan|ifupdown) env_set_kv NET_STACK "$NET_STACK" ;; esac
+  [[ -n "${SSH_ALLOW_WAN:-}" ]] && env_set_kv SSH_ALLOW_WAN "$SSH_ALLOW_WAN"
   env_set_kv WAN_MODE "$wan_mode"
   env_set_kv PPPOE_USER "$pppoe_user"
   env_set_kv PPPOE_VLAN "$pppoe_vlan"
@@ -551,26 +699,52 @@ gen_clash_secrets() {
 }
 
 prompt_interfaces() {
-  local def_wan="${WAN_IF:-end0}"
-  local def_lan="${LAN_IF:-enp1s0}"
+  # Приоритет: NANOPI_WAN_IF/NANOPI_LAN_IF → .env (upgrade) → автоопределение.
+  local def_wan="${NANOPI_WAN_IF:-${WAN_IF:-}}"
+  local def_lan="${NANOPI_LAN_IF:-${LAN_IF:-}}"
+  local src_wan="env/.env" src_lan="env/.env"
+  if [[ -z "$def_wan" ]]; then
+    def_wan=$(default_route_if); src_wan="default route"
+  fi
+  if [[ -z "$def_lan" ]]; then
+    def_lan=$(guess_lan_if "$def_wan"); src_lan="второй физический Ethernet"
+  fi
   if [[ "$INSTALL_MODE" == "upgrade" ]]; then
     explain \
-      "Интерфейсы из ${OPT_ENV} (можно поправить). На R3S LTS обычно: WAN=end0, LAN=enp1s0." \
+      "Интерфейсы из ${OPT_ENV} (можно поправить)." \
       "WAN_IF / LAN_IF сохранятся в ${OPT_ENV}"
   else
     explain \
-      "Уточню имена Ethernet. На R3S LTS обычно: WAN-разъём = end0, LAN = enp1s0.
-Lab-кабель сейчас в WAN-разъёме." \
+      "Уточню имена Ethernet. По умолчанию WAN = интерфейс маршрута по умолчанию
+(lab-кабель сейчас в нём), LAN = другой физический Ethernet.
+Примеры: NanoPi R3S LTS — WAN=end0, LAN=enp1s0; x86 (N100) — enp1s0/enp2s0." \
       "WAN_IF / LAN_IF сохранятся в ${OPT_ENV}"
   fi
 
   echo "Сейчас:"
-  ip -br link
+  show_physical_ifaces
+  echo "  (подсказка: WAN=${def_wan:-?} [${src_wan}], LAN=${def_lan:-?} [${src_lan}])"
   echo
-  WAN_IF=$(ask "WAN interface (разъём WAN на корпусе)" "$def_wan")
-  LAN_IF=$(ask "LAN interface (разъём LAN на корпусе)" "$def_lan")
-  [[ -n "$WAN_IF" && -n "$LAN_IF" ]] || die "пустые имена интерфейсов"
+  WAN_IF=$(ask "WAN interface (к ISP; сейчас lab-кабель)" "$def_wan")
+  LAN_IF=$(ask "LAN interface (к домашнему роутеру)" "$def_lan")
+  [[ -n "$WAN_IF" ]] || die "WAN не определён: задай NANOPI_WAN_IF (нет default route?)"
+  [[ -n "$LAN_IF" ]] || die "LAN не определён: задай NANOPI_LAN_IF (нет второго Ethernet?)"
   [[ "$WAN_IF" != "$LAN_IF" ]] || die "WAN и LAN не должны совпадать"
+  validate_iface_names
+  ok "WAN_IF=${WAN_IF} LAN_IF=${LAN_IF}"
+}
+
+validate_iface_names() {
+  local n
+  for n in "$WAN_IF" "$LAN_IF"; do
+    [[ "$n" =~ ^[A-Za-z0-9._-]{1,15}$ ]] || die "некорректное имя интерфейса: '${n}'"
+    if ! ip link show dev "$n" >/dev/null 2>&1; then
+      if [[ "$INSTALL_MODE" == "fresh" ]]; then
+        die "интерфейса '${n}' нет в системе (ip -br link)"
+      fi
+      echo "    WARN: интерфейса '${n}' сейчас нет в системе"
+    fi
+  done
 }
 
 
@@ -1564,7 +1738,7 @@ refresh_nft_if_router() {
   source "$SCRIPTS_DIR/common.sh"
   nanopi_load_env
   info "Router live: обновляю nftables.conf + restart nftables (port-forwards.nft сохраняется)"
-  nanopi_write_nft "${WAN_IF:-end0}"
+  nanopi_write_nft "$WAN_IF"
   nanopi_restart_nftables
 }
 
@@ -1614,7 +1788,7 @@ EOF
 ╚══════════════════════════════════════════════════════════╝
 
 Предпосылки:
-  • Свежая Armbian, root, интернет
+  • Свежая Armbian (aarch64) или Debian 12/13 (x86_64), root, интернет
   • WAN NanoPi в LAN домашнего роутера (lab)
   • VLESS+Reality под рукой
   • Врезку сейчас НЕ делаем
@@ -1635,6 +1809,11 @@ EOF
   show_inventory
   if [[ "$INSTALL_MODE" == "fresh" ]]; then
     yesno "Похоже на lab. Продолжаем?" y || exit 0
+  fi
+
+  check_singbox_pkg
+  if [[ "$INSTALL_MODE" == "fresh" ]]; then
+    check_net_stack
   fi
 
   step 2 "Интерфейсы WAN/LAN"

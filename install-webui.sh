@@ -23,7 +23,7 @@ UNIT_DST=/etc/systemd/system/nanopi-webui.service
 SCRIPT_DST="$OPT_ROOT/install-webui.sh"
 WEBUI_GITHUB_REPO="${WEBUI_GITHUB_REPO:-}"
 WEBUI_VERSION="${WEBUI_VERSION:-}"
-ASSET_NAME=nanopi-webui-linux-arm64.tar.gz
+ASSET_NAME=            # nanopi-webui-linux-<amd64|arm64>.tar.gz — по uname -m (need_arch)
 NONINTERACTIVE=0
 _WEBUI_INSTALL_TMP=
 WEBUI_TAG=            # фактический тег скачанного релиза (download_release)
@@ -36,11 +36,37 @@ cleanup_tmp() { rm -rf "${_WEBUI_INSTALL_TMP:-}"; }
 
 need_root() { [[ $(id -u) -eq 0 ]] || die "нужен root"; }
 
-need_arch() {
-  case $(uname -m) in
-    aarch64|arm64) ;;
-    *) die "ожидается aarch64 (NanoPi); сейчас: $(uname -m)" ;;
+# uname -m → GOARCH ассета релиза (NANOPI_UNAME_M — для тестов).
+webui_arch() {
+  case "${1:-$(uname -m)}" in
+    x86_64|amd64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) return 1 ;;
   esac
+}
+
+need_arch() {
+  local m arch
+  m="${NANOPI_UNAME_M:-$(uname -m)}"
+  arch=$(webui_arch "$m") \
+    || die "архитектура ${m} не поддерживается: есть сборки только для x86_64 (amd64) и aarch64 (arm64)"
+  ASSET_NAME="nanopi-webui-linux-${arch}.tar.gz"
+}
+
+# curl и jq нужны для GitHub API; если их нет — ставим из apt (неинтерактивно).
+ensure_deps() {
+  local missing=() c
+  for c in curl jq; do
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+  done
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+  command -v apt-get >/dev/null 2>&1 || die "нужны: ${missing[*]} (apt-get нет — поставь вручную)"
+  info "Ставлю: ${missing[*]} ca-certificates"
+  DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null \
+    || die "apt-get update не прошёл"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    "${missing[@]}" ca-certificates >/dev/null \
+    || die "не удалось поставить: ${missing[*]}"
 }
 
 for arg in "$@"; do
@@ -52,6 +78,8 @@ Usage: $0 [--noninteractive]
 
   WEBUI_GITHUB_REPO  из окружения или ${OPT_ENV} (обязателен)
   WEBUI_VERSION       tag (v0.0.1) или пусто = latest
+  Архитектура по uname -m: x86_64 → nanopi-webui-linux-amd64.tar.gz,
+  aarch64 → nanopi-webui-linux-arm64.tar.gz
 EOF
       exit 0
       ;;
@@ -288,8 +316,7 @@ EOF
 
   [[ -f "$OPT_ENV" ]] || die "нет ${OPT_ENV} — сначала install-singbox.sh"
   [[ -f /etc/sing-box/config.json ]] || die "нет /etc/sing-box/config.json"
-  command -v curl >/dev/null || die "нужен curl"
-  command -v jq >/dev/null || die "нужен jq"
+  ensure_deps
 
   # shellcheck disable=SC1090
   # CLI/env вызывающего имеют приоритет над значениями из .env

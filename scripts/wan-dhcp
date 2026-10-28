@@ -5,11 +5,12 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/common.sh"
 nanopi_load_env
+nanopi_net_begin
 
 echo "==> wan-dhcp: ${WAN_IF} DHCP"
 
 nanopi_stop_wan_pppoe
-nanopi_write_wan_dhcp_netplan "$WAN_IF"
+nanopi_write_wan_dhcp_net "$WAN_IF"
 nanopi_set_env_kv WAN_MODE dhcp
 # VLAN сбрасываем при откате на DHCP
 nanopi_set_env_kv PPPOE_VLAN ""
@@ -18,9 +19,9 @@ PPPOE_VLAN=""
 nanopi_write_ppp_auth_secrets "" ""
 nanopi_ensure_lan_dual_serve
 
-netplan apply
+nanopi_net_apply
 ip link set "$WAN_IF" up || true
-# nftables снова (после netplan); exclude + restart sing-box — последним
+# nftables снова (после применения сети); exclude + restart sing-box — последним
 nanopi_restart_nftables
 nanopi_patch_singbox_exclude
 nanopi_write_hairpin_dns_alias

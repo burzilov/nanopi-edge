@@ -101,13 +101,20 @@ inline SVG в шаблонах, шрифт системный, адреса и �
 
 ```bash
 cd webui
-make build          # → dist/nanopi-webui
-make build-arm64    # кросс для NanoPi
+make build          # → dist/nanopi-webui (текущая машина)
+make build-arm64    # → dist/nanopi-webui-linux-arm64 (NanoPi, aarch64)
+make build-amd64    # → dist/nanopi-webui-linux-amd64 (x86_64, напр. N100)
+make build-all      # оба
+./dist/nanopi-webui --version   # nanopi-webui vX.Y.Z linux/amd64
+go vet ./... && go test ./...
 ```
 
-## Установка на плату
+## Установка на плату / хост
 
-См. корневой `install-webui.sh` (скачивает release с GitHub).
+См. корневой `install-webui.sh` (скачивает release с GitHub). Архив выбирается по
+`uname -m`: `x86_64` → `nanopi-webui-linux-amd64.tar.gz`, `aarch64` →
+`nanopi-webui-linux-arm64.tar.gz`, другое — ошибка. Нет `curl`/`jq` — поставит
+из apt вместе с `ca-certificates`.
 `WEBUI_GITHUB_REPO` берётся из `/opt/nanopi-edge/.env`.
 
 ```bash
@@ -123,7 +130,9 @@ WEBUI_VERSION=v0.0.2 bash install-webui.sh --noninteractive
 старую панель отдельно), она остаётся. Проверка: `bash tests/install-webui-env.test.sh`.
 
 В панели на статусе: «Проверить обновления» → при наличии релиза — «Обновить»
-(скачивает `install-singbox.sh` и `install-webui.sh` из ассетов; edge-установщик
+(скачивает `install-singbox.sh` и `install-webui.sh` из ассетов и проверяет, что в
+релизе есть архив панели **своей** архитектуры — `nanopi-webui-linux-<GOARCH>.tar.gz`;
+edge-установщик
 подтягивает `nanopi-edge-scripts.tar.gz` с того же тега; запускает
 в **отдельном процессе**: edge → webui). Страница перезагружается только когда
 `/api/updates/status` = ok и обе версии (webui + EDGE_VERSION) совпали с тегом.
@@ -140,5 +149,10 @@ make install-unit
 
 ## Release
 
-Тег `v*` → Actions собирает бинарь с `-X main.Version=<tag>` и публикует
-`nanopi-webui-linux-arm64.tar.gz`.
+Тег `v*` → Actions прогоняет `go vet`/`go test`, собирает бинари linux/amd64 и
+linux/arm64 с `-X main.Version=<tag>` (проверка `file` и `--version`) и публикует
+`nanopi-webui-linux-amd64.tar.gz`, `nanopi-webui-linux-arm64.tar.gz`,
+`nanopi-edge-scripts.tar.gz`, `install-singbox.sh`, `install-webui.sh`.
+
+Без WAN_IF/LAN_IF в `.env` (не должно быть после установщика) панель берёт WAN
+из маршрута по умолчанию (`internal/netif`), LAN-подсеть — `10.10.10.0/24`.

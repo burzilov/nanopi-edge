@@ -8,6 +8,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/common.sh"
 nanopi_load_env
+nanopi_net_begin
 
 USER_IN="${1:-${PPPOE_USER:-}}"
 PASS_IN="${2:-${PPPOE_PASS:-}}"
@@ -33,14 +34,14 @@ echo "==> wan-pppoe: user=${USER_IN:-(empty)} vlan=${VLAN_IN:-(none)}"
 
 nanopi_stop_wan_pppoe
 
-rm -f "$NETPLAN_DIR/30-ethernets-dhcp.yaml" "$NETPLAN_DIR/40-router-wan-dhcp.yaml"
+nanopi_net_rm lab wan
 
 if [[ -n "$VLAN_IN" ]]; then
-  nanopi_write_wan_vlan_netplan "$WAN_IF" "$VLAN_IN"
+  nanopi_write_wan_vlan_net "$WAN_IF" "$VLAN_IN"
   NIC="nic-${WAN_IF}.${VLAN_IN}"
 else
-  rm -f "$NETPLAN_DIR/45-router-wan-vlan.yaml"
-  nanopi_write_wan_pppoe_l2_netplan "$WAN_IF"
+  nanopi_net_rm vlan
+  nanopi_write_wan_pppoe_l2_net "$WAN_IF"
   NIC="nic-${WAN_IF}"
 fi
 
@@ -57,7 +58,7 @@ nanopi_write_wan_pppoe_unit
 nanopi_ensure_lan_dual_serve
 nanopi_write_ppp_auth_secrets "$USER_IN" "$PASS_IN"
 
-netplan apply
+nanopi_net_apply
 ip link set "$WAN_IF" up || true
 if [[ -n "$VLAN_IN" ]]; then
   for _ in 1 2 3 4 5 6 7 8 9 10; do

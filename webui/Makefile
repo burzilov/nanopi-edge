@@ -29,7 +29,7 @@ ifneq ($(GOARCH),)
 GO_ENV+=GOARCH=$(GOARCH)
 endif
 
-.PHONY: build build-arm64 install install-unit clean
+.PHONY: build build-arm64 build-amd64 build-all install install-unit clean
 
 build:
 	mkdir -p dist
@@ -37,7 +37,13 @@ build:
 	$(GO_ENV) go build -trimpath -ldflags='$(LDFLAGS)' -o $(DIST) .
 
 build-arm64:
-	$(MAKE) build GOOS=linux GOARCH=arm64
+	$(MAKE) build GOOS=linux GOARCH=arm64 DIST=dist/$(APP)-linux-arm64
+
+build-amd64:
+	$(MAKE) build GOOS=linux GOARCH=amd64 DIST=dist/$(APP)-linux-amd64
+
+# Оба релизных бинаря: dist/nanopi-webui-linux-{arm64,amd64}
+build-all: build-arm64 build-amd64
 
 install: build
 	install -m 755 $(DIST) $(BIN)
