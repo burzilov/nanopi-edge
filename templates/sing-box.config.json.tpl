@@ -6,8 +6,7 @@
   },
   "http_clients": [
     {
-      "tag": "ruleset-direct",
-      "detour": "direct"
+      "tag": "ruleset-direct"
     }
   ],
   "dns": {
