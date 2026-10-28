@@ -118,9 +118,60 @@ ssh root@<lab-ip>
 bash install-singbox.sh
 ```
 
-Скрипт интерактивный: пакеты (`ppp`/`pppoe` и др.), sing-box, мастер VLESS,
-приёмочные тесты. Врезку ISP **не** делает — в конце печатает чеклист кабелей и
-`/opt/nanopi-edge/scripts/router-on`.
+Скрипт интерактивный: пакеты (`ppp`/`pppoe` и др.), sing-box, hairpin DNS
+(шаг 6b, опционально), мастер VLESS, приёмочные тесты. Врезку ISP **не** делает —
+в конце печатает чеклист кабелей и `/opt/nanopi-edge/scripts/router-on`.
+
+**Узлы VLESS — ссылкой из 3x-ui.** В 3x-ui: Inbounds → клиент → «Копировать
+ссылку», вставить в мастер целиком:
+
+```text
+vless://UUID@host:port?type=tcp&security=reality&pbk=…&fp=chrome&sni=…&sid=…&spx=%2F&flow=xtls-rprx-vision#remark
+```
+
+Мастер разберёт адрес, порт, UUID, `pbk`/`sni`/`sid`, `fp`, `flow`, покажет
+сводку (UUID и ключ замаскированы) и спросит подтверждение; имя узла по умолчанию —
+из `#remark` (латиница/цифры/дефис, префикс `vless-` добавится сам). Узлов можно
+несколько, затем выбирается default для selector `proxy`. Enter вместо ссылки —
+ввод по полям, как раньше.
+
+- Поддерживается только **VLESS + Reality поверх TCP** (`type=tcp`/`raw`,
+  `security=reality`, `encryption=none`); `pbk`, `sni`, `sid` обязательны.
+  `grpc`/`ws`/`xhttp`/`httpupgrade`, `security=tls`/`none` — ошибка (шаблон их не
+  умеет). `spx`, `pqv` и прочие неизвестные параметры игнорируются (видно в сводке).
+- `flow`: `xtls-rprx-vision` или пусто (тогда без flow); `fp` — из ссылки
+  (неизвестный → `chrome`). IPv6-адрес — в `[...]`.
+- IPv4-адрес узла получает route-правило `direct`; hostname и IPv6 — нет
+  (как и раньше).
+
+Без вопросов (свежая установка / пересборка `config.json`):
+
+```bash
+NANOPI_YES=1 \
+NANOPI_VLESS_LINKS='vless://…#Finland
+germany vless://…' \
+NANOPI_VLESS_DEFAULT=finland \
+NANOPI_HAIRPIN_DNS_TARGET=192.168.1.10 \
+bash install-singbox.sh
+```
+
+| Переменная | Что |
+| --- | --- |
+| `NANOPI_VLESS_LINKS` | ссылки по одной на строку: `vless://…` или `имя vless://…` |
+| `NANOPI_VLESS_LINKS_FILE` | файл с такими строками (`#` — комментарий); лучше `0600` |
+| `NANOPI_VLESS_DEFAULT` | default для `proxy` (иначе первый узел) |
+| `NANOPI_HAIRPIN_DNS_TARGET` | hairpin, только если в `.env` его ещё нет |
+
+`NANOPI_YES=1` без ссылок при необходимости собрать `config.json` — понятная ошибка.
+При upgrade существующий `config.json` по умолчанию не трогается, ссылки не нужны.
+
+**Hairpin DNS (шаг 6b).** Мастер спрашивает LAN IP Nginx Proxy Manager:
+Enter без значения — пропустить (если уже задан — оставить), `-` — выключить.
+Значение пишется в `.env` и сразу применяется (`/etc/dnsmasq.d/hairpin-alias.conf`,
+перезапуск dnsmasq — только если он уже запущен и значение изменилось). При
+`NANOPI_YES=1` вопросов нет: значение из `.env` не меняется, при его отсутствии
+берётся `NANOPI_HAIRPIN_DNS_TARGET` (унаследованный `HAIRPIN_DNS_TARGET` из
+окружения игнорируется).
 
 **Повторный запуск безопасен (upgrade):** обновляет scripts/пакеты/бинарь,
 не гасит dnsmasq/nftables в router-режиме, по умолчанию не трогает
@@ -187,11 +238,10 @@ bash install-webui.sh
 Руками:
 
 1. Armbian, доступ root по SSH (ключ); настройки sshd — по вкусу.
-2. Мастер VLESS в `install-singbox.sh`: для каждого VPS — адрес, порт, UUID,
-   Reality public key, short_id, SNI; выбор узла по умолчанию.
-3. Врезка и `router-on` (раздел 2), PPPoE-креды ISP, если нужны; hairpin —
-   `HAIRPIN_DNS_TARGET=<IP NPM>` в `/opt/nanopi-edge/.env` (если не задан) и
-   `scripts/hairpin-dns-refresh`.
+2. Мастер VLESS в `install-singbox.sh`: для каждого VPS — ссылка `vless://` из
+   3x-ui (или поля вручную), имя узла; выбор узла по умолчанию. Hairpin — там же,
+   шаг 6b: LAN IP Nginx Proxy Manager (Enter — пропустить).
+3. Врезка и `router-on` (раздел 2), PPPoE-креды ISP, если нужны.
 4. `install-webui.sh`; в панели — проброс портов и исключения hairpin
    (или перенести `/opt/nanopi-edge/port-forwards.json`, `hairpin-overrides.json`
    со старой платы).
@@ -233,7 +283,7 @@ bash install-webui.sh
 Проброс 80/443 на Nginx Proxy Manager — обычные правила на странице **Проброс
 портов** (на роутер; комментарий `nginx-proxy-manager` остался от прежней страницы
 `/proxy-manager`, которая теперь редиректит сюда), а с роутера — на NPM.
-DNS hairpin (`HAIRPIN_DNS_TARGET` в `.env`, ставится `install-singbox.sh`) работает
+DNS hairpin (`HAIRPIN_DNS_TARGET` в `.env`, спрашивает `install-singbox.sh` на шаге 6b) работает
 как раньше; адрес подмены меняется или отключается в блоке **DNS hairpin** на
 странице **Проброс портов** (сохраняет `.env` и запускает `hairpin-dns-refresh`). На Keenetic: DNS клиентов = `10.10.10.1`.
 Там же — **исключения** «имя → адрес»: имя и его поддомены из дома ведут не на NPM,

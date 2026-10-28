@@ -6,6 +6,13 @@
 #   bash install-singbox.sh test
 #   NANOPI_YES=1 bash install-singbox.sh   # без вопросов (для WebUI / cron)
 #
+# Узлы VLESS+Reality — ссылкой vless:// из 3x-ui (мастер спросит; Enter — ввод по полям).
+# Без вопросов (свежая установка / пересборка config.json):
+#   NANOPI_VLESS_LINKS        ссылки по одной на строку («vless://…» или «имя vless://…»)
+#   NANOPI_VLESS_LINKS_FILE   файл с такими строками (# — комментарий)
+#   NANOPI_VLESS_DEFAULT      default для selector proxy (иначе — первый узел)
+#   NANOPI_HAIRPIN_DNS_TARGET LAN IP для hairpin DNS, если в .env его ещё нет
+#
 # Повторный запуск не гасит router-режим (dnsmasq/nftables) и по умолчанию
 # не пересобирает /etc/sing-box/config.json.
 #
@@ -567,24 +574,69 @@ Lab-кабель сейчас в WAN-разъёме." \
 }
 
 
-prompt_hairpin_dns() {
-  # Фоновый апдейт из WebUI: не спрашиваем, только освежаем alias если ключ уже есть.
-  if [[ "${NANOPI_YES:-}" == "1" ]]; then
-    local existing=""
-    if [[ -f "$OPT_ENV" ]] && grep -q '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" 2>/dev/null; then
-      existing=$(grep -E '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" | tail -1 | cut -d= -f2- | tr -d '\r')
+# Записать alias hairpin в dnsmasq (тот же код, что scripts/hairpin-dns-refresh) и,
+# если dnsmasq уже работает (router live), перезапустить его. В lab dnsmasq замаскирован —
+# файл просто ляжет на место, router-on его подхватит.
+hairpin_apply_alias() {
+  local target="$1"
+  if [[ ! -x "$SCRIPTS_DIR/hairpin-dns-refresh" || ! -f "$SCRIPTS_DIR/common.sh" ]]; then
+    info "нет ${SCRIPTS_DIR}/hairpin-dns-refresh — alias применится при router-on"
+    return 0
+  fi
+  (
+    # shellcheck disable=SC1091
+    source "$SCRIPTS_DIR/common.sh"
+    nanopi_load_env 2>/dev/null || true
+    HAIRPIN_DNS_TARGET=$target
+    nanopi_write_hairpin_dns_alias
+  ) || { echo "WARN: не удалось записать hairpin alias (повтори: ${SCRIPTS_DIR}/hairpin-dns-refresh)" >&2; return 0; }
+  if systemctl is-active --quiet dnsmasq 2>/dev/null; then
+    if systemctl restart dnsmasq; then
+      info "dnsmasq перезапущен — hairpin alias применён"
+    else
+      echo "WARN: dnsmasq не перезапустился — проверь: systemctl status dnsmasq" >&2
     fi
-    HAIRPIN_DNS_TARGET=$existing
-    if [[ -n "$existing" && -x "$SCRIPTS_DIR/hairpin-dns-refresh" ]]; then
-      # shellcheck disable=SC1091
-      source "$SCRIPTS_DIR/common.sh"
-      nanopi_load_env 2>/dev/null || true
-      HAIRPIN_DNS_TARGET=$existing
-      nanopi_write_hairpin_dns_alias
-      if systemctl is-active --quiet dnsmasq 2>/dev/null; then
-        systemctl restart dnsmasq || true
+  fi
+}
+
+hairpin_valid_ipv4() {
+  local ip="$1" o
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  for o in "${BASH_REMATCH[@]:1}"; do
+    (( 10#$o <= 255 )) || return 1
+  done
+}
+
+# Шаг мастера «Hairpin DNS» (после .env).
+#   интерактивно: Enter = оставить текущее (или пропустить, если не задано), «-» = выключить;
+#   NANOPI_YES=1: не спрашиваем. Значение из .env не трогаем; если в .env ключа нет —
+#     берём NANOPI_HAIRPIN_DNS_TARGET (именно его, а не HAIRPIN_DNS_TARGET: WebUI
+#     наследует старое значение из EnvironmentFile=.env и вернул бы выключенный hairpin).
+prompt_hairpin_dns() {
+  local existing=""
+  if [[ -f "$OPT_ENV" ]] && grep -q '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" 2>/dev/null; then
+    existing=$(grep -E '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" | tail -1 | cut -d= -f2- | tr -d '\r[:space:]')
+  fi
+
+  if [[ "${NANOPI_YES:-}" == "1" ]]; then
+    local val="$existing"
+    if [[ -z "$val" && -n "${NANOPI_HAIRPIN_DNS_TARGET:-}" ]]; then
+      val=${NANOPI_HAIRPIN_DNS_TARGET//[[:space:]]/}
+      if hairpin_valid_ipv4 "$val"; then
+        env_set_kv HAIRPIN_DNS_TARGET "$val"
+        info "HAIRPIN_DNS_TARGET=${val} (из NANOPI_HAIRPIN_DNS_TARGET)"
+      else
+        echo "WARN: NANOPI_HAIRPIN_DNS_TARGET не IPv4 — hairpin пропущен" >&2
+        val=""
       fi
-      info "Hairpin DNS (NANOPI_YES): ${existing}"
+    fi
+    HAIRPIN_DNS_TARGET=$val
+    if [[ -n "$val" && "$val" != "$existing" ]]; then
+      hairpin_apply_alias "$val"
+      info "Hairpin DNS (NANOPI_YES): ${val}"
+    elif [[ -n "$val" ]]; then
+      # уже задан — alias ведут wan-*/hairpin-dns-refresh; dnsmasq зря не дёргаем
+      info "Hairpin DNS (NANOPI_YES): ${val} (без изменений)"
     else
       info "Hairpin DNS (NANOPI_YES): пропуск"
     fi
@@ -594,59 +646,60 @@ prompt_hairpin_dns() {
   explain \
     "Опционально: hairpin DNS для доменов Nginx Proxy Manager из домашней LAN.
 Укажи LAN IP Nginx Proxy Manager (или хоста за роутером). dnsmasq подменит A-записи
-с белым IP WAN на этот адрес. Пусто / Enter без значения = не использовать.
+с белым IP WAN на этот адрес. Enter без значения = не использовать.
 Потом на роутере: DNS клиентов = 10.10.10.1. Значение только в ${OPT_ENV}, не в git.
-При upgrade: Enter = оставить текущее; «-» = выключить." \
+Если уже задано: Enter = оставить текущее; «-» = выключить.
+Позже можно поменять в панели (Проброс портов → DNS hairpin)." \
     "HAIRPIN_DNS_TARGET в ${OPT_ENV} или отсутствует"
 
-  local def=""
-  if [[ -f "$OPT_ENV" ]] && grep -q '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" 2>/dev/null; then
-    def=$(grep -E '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" | tail -1 | cut -d= -f2- | tr -d '\r')
-  fi
+  local val try
+  for try in 1 2 3; do
+    val=$(ask "LAN IP для hairpin DNS (Nginx Proxy Manager, Enter — пропустить)" "$existing")
+    val=${val//[[:space:]]/}
+    if [[ "$val" == "-" || "$val" == "none" || "$val" == "off" ]]; then
+      val=""
+    fi
+    if [[ -z "$val" ]] || hairpin_valid_ipv4 "$val"; then
+      break
+    fi
+    echo "  нужен IPv4 (например 192.168.1.10), «-» или Enter" >&2
+    if [[ "$try" -ge 3 ]]; then
+      echo "WARN: hairpin DNS не изменён (настрой позже в панели или перезапусти установщик)" >&2
+      HAIRPIN_DNS_TARGET=$existing
+      return 0
+    fi
+  done
 
-  local val
-  val=$(ask "LAN IP для hairpin DNS (Nginx Proxy Manager)" "$def")
-  val=${val//[[:space:]]/}
-  if [[ "$val" == "-" || "$val" == "none" || "$val" == "off" ]]; then
-    val=""
-  fi
   if [[ -z "$val" ]]; then
-    if [[ -f "$OPT_ENV" ]]; then
-      # убрать ключ, чтобы не остался пустой/старый
+    HAIRPIN_DNS_TARGET=""
+    if [[ -n "$existing" ]]; then
+      # выключение: убрать ключ и переписать alias (без подмены; исключения панели остаются)
       local tmp
       tmp=$(mktemp)
       grep -v '^HAIRPIN_DNS_TARGET=' "$OPT_ENV" >"$tmp" || true
+      chmod 600 "$tmp"
       mv "$tmp" "$OPT_ENV"
-      chmod 600 "$OPT_ENV"
+      hairpin_apply_alias ""
+      info "Hairpin DNS выключен"
+    else
+      info "Hairpin DNS пропущен"
     fi
-    HAIRPIN_DNS_TARGET=""
-    info "Hairpin DNS выключен / пропущен"
     return 0
   fi
-  if ! [[ "$val" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    die "HAIRPIN_DNS_TARGET: нужен IPv4, «-» или пусто"
+  HAIRPIN_DNS_TARGET=$val
+  if [[ "$val" == "$existing" ]]; then
+    info "HAIRPIN_DNS_TARGET=${val} (без изменений)"
+    return 0
   fi
   env_set_kv HAIRPIN_DNS_TARGET "$val"
-  HAIRPIN_DNS_TARGET=$val
   info "HAIRPIN_DNS_TARGET=${val}"
-
-  # если router уже жив — сразу применить alias
-  if [[ -x "$SCRIPTS_DIR/hairpin-dns-refresh" ]]; then
-    # shellcheck disable=SC1091
-    source "$SCRIPTS_DIR/common.sh"
-    nanopi_load_env 2>/dev/null || true
-    HAIRPIN_DNS_TARGET=$val
-    nanopi_write_hairpin_dns_alias
-    if systemctl is-active --quiet dnsmasq 2>/dev/null; then
-      systemctl restart dnsmasq
-      info "dnsmasq alias обновлён"
-    fi
-  fi
+  hairpin_apply_alias "$val"
 }
 
 # Рендер config.json из шаблона + узлов VLESS → stdout (без записи в /etc; тестируется отдельно).
 #   render_singbox_config <template> <nodes.json> <clash_secret> <default_tag> <wan_if>
-# - outbounds: direct + vless-узлы + selector proxy;
+# - outbounds: direct + vless-узлы + selector proxy; flow/fingerprint узла — из ссылки
+#   (нет поля → xtls-rprx-vision / chrome, как раньше; flow "" → без flow);
 # - IPv4 узлов → ОДНО отдельное правило route direct сразу после ip_is_private
 #   (клиенты LAN к VPS — мимо туннеля); в другие ip_cidr (reject 169.254/16, DNS IP) не попадают;
 # - domain_suffix первого route-правила outbound=proxy (его правит WebUI) копируется
@@ -676,18 +729,18 @@ render_singbox_config() {
               server_port: .server_port,
               uuid: .uuid,
               network: ["tcp", "udp"],
-              flow: "xtls-rprx-vision",
+              flow: (if has("flow") then .flow else "xtls-rprx-vision" end),
               tls: {
                 enabled: true,
                 server_name: .server_name,
-                utls: { enabled: true, fingerprint: "chrome" },
+                utls: { enabled: true, fingerprint: ((.fingerprint // "") | if . == "" then "chrome" else . end) },
                 reality: {
                   enabled: true,
                   public_key: .public_key,
                   short_id: .short_id
                 }
               }
-            }))
+            } | if .flow == "" then del(.flow) else . end))
           + [{
               type: "selector",
               tag: "proxy",
@@ -833,63 +886,409 @@ normalize_vless_tag() {
   fi
 }
 
+# --- ссылки vless:// (3x-ui) ---
+#
+# Формат 3x-ui (Reality):
+#   vless://UUID@host:port?type=tcp&security=reality&pbk=…&fp=chrome&sni=…&sid=…&spx=%2F&flow=xtls-rprx-vision#remark
+# Шаблон outbound (render_singbox_config) умеет только VLESS + Reality поверх TCP
+# (type=tcp, у Xray он же raw), flow пусто или xtls-rprx-vision, uTLS fingerprint.
+# spx (spiderX), pqv (ML-DSA) и прочее sing-box не использует — игнорируем.
+# Без eval: значения только через переменные и jq --arg. Секреты в ошибки не попадают.
+
+VLESS_FINGERPRINTS="chrome firefox edge safari 360 qq ios android random randomized"
+
+# URL-decode (%XX, UTF-8 байты). $2=1 — ещё «+» → пробел (query из URLSearchParams).
+# rc 1: битый %, %00 или управляющие символы.
+vless_urldecode() {
+  local s="$1" plus="${2:-0}" out
+  [[ "$plus" == "1" ]] && s=${s//+/ }
+  if [[ "$s" == *%* ]]; then
+    local rest="$s"
+    while [[ "$rest" == *%* ]]; do
+      rest=${rest#*%}
+      [[ "$rest" =~ ^[0-9A-Fa-f]{2} ]] || return 1
+      [[ "${rest:0:2}" != "00" ]] || return 1
+    done
+    s=${s//\\/\\\\}
+    s=${s//%/\\x}
+    out=$(printf '%b.' "$s") || return 1
+    out=${out%.}
+  else
+    out=$s
+  fi
+  [[ "$out" != *[[:cntrl:]]* ]] || return 1
+  printf '%s' "$out"
+}
+
+# Короткое имя узла из #remark: латиница/цифры/дефис, нижний регистр. Пусто — «».
+vless_name_from_remark() {
+  local r="$1" out=""
+  r=$(printf '%s' "$r" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed -e 's/[^a-z0-9_-]\{1,\}/-/g' -e 's/--*/-/g' -e 's/^[-_]*//' -e 's/[-_]*$//')
+  out=${r:0:40}
+  out=${out%-}
+  printf '%s' "$out"
+}
+
+# parse_vless_link <ссылка> → JSON узла в stdout:
+#   {server, server_port, uuid, server_name, public_key, short_id, flow, fingerprint,
+#    remark, name, ignored:[…]}
+# Ошибка → сообщение в stderr (без секретов), rc 1.
+parse_vless_link() {
+  local link="$1"
+  link=${link//$'\r'/}
+  link="${link#"${link%%[![:space:]]*}"}"
+  link="${link%"${link##*[![:space:]]}"}"
+  local err="ссылка vless://"
+
+  if [[ -z "$link" ]]; then echo "${err}: пустая строка" >&2; return 1; fi
+  if [[ "$link" =~ [[:space:]] ]]; then echo "${err}: внутри ссылки пробелы/переносы — скопируй её целиком одной строкой" >&2; return 1; fi
+  local lower
+  lower=$(printf '%s' "${link:0:8}" | LC_ALL=C tr 'A-Z' 'a-z')
+  if [[ "$lower" != "vless://" ]]; then
+    echo "${err}: должна начинаться с vless:// (vmess/trojan/ss не поддерживаются)" >&2; return 1
+  fi
+  local rest="${link:8}" fragment="" query="" authority
+  if [[ "$rest" == *"#"* ]]; then fragment=${rest#*#}; rest=${rest%%#*}; fi
+  if [[ "$rest" == *"?"* ]]; then query=${rest#*\?}; rest=${rest%%\?*}; fi
+  authority=${rest%/}
+  if [[ "$authority" != *"@"* ]]; then echo "${err}: нет UUID@адрес" >&2; return 1; fi
+
+  local userinfo hostport uuid host port
+  userinfo=${authority%@*}
+  hostport=${authority##*@}
+  uuid=$(vless_urldecode "$userinfo") || { echo "${err}: битое URL-кодирование в UUID" >&2; return 1; }
+  if ! [[ "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+    echo "${err}: UUID не в формате xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" >&2; return 1
+  fi
+  uuid=$(printf '%s' "$uuid" | LC_ALL=C tr 'A-F' 'a-f')
+
+  if [[ "$hostport" == \[* ]]; then
+    if ! [[ "$hostport" =~ ^\[([0-9A-Fa-f:.]+)\](:([0-9]*))?$ ]]; then
+      echo "${err}: некорректный IPv6-адрес в []" >&2; return 1
+    fi
+    host=${BASH_REMATCH[1]}
+    port=${BASH_REMATCH[3]}
+    [[ "$host" == *:* ]] || { echo "${err}: в [] ожидается IPv6" >&2; return 1; }
+  else
+    if [[ "$hostport" == *:*:* ]]; then echo "${err}: IPv6-адрес должен быть в [] ([2001:db8::1]:443)" >&2; return 1; fi
+    host=${hostport%%:*}
+    port=""
+    [[ "$hostport" == *:* ]] && port=${hostport#*:}
+    host=$(vless_urldecode "$host") || { echo "${err}: битое URL-кодирование в адресе" >&2; return 1; }
+    if ! [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+      echo "${err}: некорректный адрес сервера" >&2; return 1
+    fi
+  fi
+  [[ -n "$port" ]] || port=443
+  if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
+    echo "${err}: порт должен быть 1–65535" >&2; return 1
+  fi
+  port=$((10#$port))
+
+  # query → известные ключи (последнее значение выигрывает), остальные — в ignored
+  local security="" type="" pbk="" sni="" sid="" fp="" flow="" encryption="" header_type=""
+  local have_pbk=0 have_sni=0 have_sid=0
+  local -a ignored=()
+  local pair key val
+  local IFS='&'
+  local -a pairs=()
+  read -r -a pairs <<<"$query"
+  unset IFS
+  for pair in "${pairs[@]}"; do
+    [[ -n "$pair" ]] || continue
+    key=${pair%%=*}
+    val=""
+    [[ "$pair" == *=* ]] && val=${pair#*=}
+    key=$(vless_urldecode "$key" 1) || { echo "${err}: битое URL-кодирование в параметрах" >&2; return 1; }
+    val=$(vless_urldecode "$val" 1) || { echo "${err}: битое URL-кодирование в параметре ${key}" >&2; return 1; }
+    case "$key" in
+      security) security=$val ;;
+      type) type=$val ;;
+      pbk) pbk=$val; have_pbk=1 ;;
+      sni) sni=$val; have_sni=1 ;;
+      sid) sid=$val; have_sid=1 ;;
+      fp) fp=$val ;;
+      flow) flow=$val ;;
+      encryption) encryption=$val ;;
+      headerType) header_type=$val ;;
+      *) [[ "$key" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] && ignored+=("$key") ;;
+    esac
+  done
+
+  case "${encryption:-none}" in
+    none) ;;
+    *) echo "${err}: encryption=${encryption:0:20} не поддерживается (нужно none)" >&2; return 1 ;;
+  esac
+  case "$security" in
+    reality) ;;
+    tls) echo "${err}: security=tls — шаблон поддерживает только Reality (security=reality)" >&2; return 1 ;;
+    "") echo "${err}: нет security=reality — шаблон поддерживает только Reality" >&2; return 1 ;;
+    *) echo "${err}: security=${security:0:20} не поддерживается (нужно reality)" >&2; return 1 ;;
+  esac
+  case "${type:-tcp}" in
+    tcp|raw) ;;
+    grpc|ws|xhttp|splithttp|httpupgrade|http|h2|kcp|quic)
+      echo "${err}: транспорт type=${type} пока не поддерживается шаблоном (только tcp) — в 3x-ui выбери Transmission: TCP (RAW)" >&2; return 1 ;;
+    *) echo "${err}: неизвестный транспорт type=${type:0:20} (поддерживается только tcp)" >&2; return 1 ;;
+  esac
+  case "${header_type:-none}" in
+    none) ;;
+    *) echo "${err}: headerType=${header_type:0:20} не поддерживается (нужно none)" >&2; return 1 ;;
+  esac
+  if [[ "$have_pbk" -ne 1 || -z "$pbk" ]]; then echo "${err}: нет pbk (Reality public key)" >&2; return 1; fi
+  if ! [[ "$pbk" =~ ^[A-Za-z0-9_-]{42,44}=?$ ]]; then echo "${err}: pbk не похож на Reality public key (base64url, 43 символа)" >&2; return 1; fi
+  if [[ "$have_sni" -ne 1 || -z "$sni" ]]; then echo "${err}: нет sni (Reality server_name)" >&2; return 1; fi
+  if ! [[ "$sni" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then echo "${err}: некорректный sni" >&2; return 1; fi
+  if [[ "$have_sid" -ne 1 || -z "$sid" ]]; then echo "${err}: нет sid (Reality short_id)" >&2; return 1; fi
+  if ! [[ "$sid" =~ ^[0-9A-Fa-f]{1,16}$ ]] || (( ${#sid} % 2 != 0 )); then
+    echo "${err}: sid должен быть hex чётной длины до 16 символов" >&2; return 1
+  fi
+  case "$flow" in
+    ""|xtls-rprx-vision) ;;
+    *) echo "${err}: flow=${flow:0:30} не поддерживается sing-box (нужно xtls-rprx-vision или пусто)" >&2; return 1 ;;
+  esac
+  local fp_note=""
+  if [[ -z "$fp" ]]; then
+    fp=chrome
+  elif [[ " $VLESS_FINGERPRINTS " != *" $fp "* ]]; then
+    fp_note="fp=${fp:0:20}"
+    fp=chrome
+  fi
+  [[ -n "$fp_note" ]] && ignored+=("$fp_note → chrome")
+
+  local remark=""
+  if [[ -n "$fragment" ]]; then
+    remark=$(vless_urldecode "$fragment") || remark=""
+  fi
+  local name
+  name=$(vless_name_from_remark "$remark")
+
+  local ign_json='[]'
+  if [[ ${#ignored[@]} -gt 0 ]]; then
+    ign_json=$(printf '%s\n' "${ignored[@]}" | jq -R . | jq -s 'unique')
+  fi
+  jq -n --arg server "$host" --argjson port "$port" --arg uuid "$uuid" \
+    --arg sni "$sni" --arg pbk "$pbk" --arg sid "$sid" --arg flow "$flow" --arg fp "$fp" \
+    --arg remark "$remark" --arg name "$name" --argjson ignored "$ign_json" '{
+      server: $server, server_port: $port, uuid: $uuid,
+      server_name: $sni, public_key: $pbk, short_id: $sid,
+      flow: $flow, fingerprint: $fp,
+      remark: $remark, name: $name, ignored: $ignored
+    }'
+}
+
+# Маска секрета для вывода: первые N и последние 4 символа.
+vless_mask() {
+  local s="$1" head="${2:-4}"
+  if (( ${#s} <= head + 4 )); then
+    printf '%s' "${s:0:2}…"
+  else
+    printf '%s…%s' "${s:0:head}" "${s: -4}"
+  fi
+}
+
+# Сводка узла (JSON из parse_vless_link) без полного UUID/ключа.
+vless_node_summary() {
+  local json="$1" server port uuid sni pbk sid flow fp remark ign
+  server=$(jq -r '.server' <<<"$json")
+  port=$(jq -r '.server_port' <<<"$json")
+  uuid=$(jq -r '.uuid' <<<"$json")
+  sni=$(jq -r '.server_name' <<<"$json")
+  pbk=$(jq -r '.public_key' <<<"$json")
+  sid=$(jq -r '.short_id' <<<"$json")
+  flow=$(jq -r '.flow' <<<"$json")
+  fp=$(jq -r '.fingerprint' <<<"$json")
+  remark=$(jq -r '.remark' <<<"$json")
+  ign=$(jq -r '.ignored | join(", ")' <<<"$json")
+  [[ "$server" == *:* ]] && server="[${server}]"
+  echo "  remark:      ${remark:-—}"
+  echo "  сервер:      ${server}:${port}"
+  echo "  UUID:        $(vless_mask "$uuid" 8)"
+  echo "  Reality:     sni=${sni}  pbk=$(vless_mask "$pbk" 6)  sid=${sid:0:2}…(${#sid})"
+  echo "  flow / fp:   ${flow:-—} / ${fp}"
+  [[ -z "$ign" ]] || echo "  не используется sing-box: ${ign}"
+}
+
+# Список ссылок для мастера без вопросов: NANOPI_VLESS_LINKS (по одной на строку)
+# и/или файл NANOPI_VLESS_LINKS_FILE. Строка: «vless://…» или «имя vless://…»;
+# пустые и начинающиеся с # — пропуск. Вывод — нормализованные строки.
+vless_links_input() {
+  local line
+  {
+    [[ -z "${NANOPI_VLESS_LINKS:-}" ]] || printf '%s\n' "$NANOPI_VLESS_LINKS"
+    if [[ -n "${NANOPI_VLESS_LINKS_FILE:-}" ]]; then
+      [[ -r "$NANOPI_VLESS_LINKS_FILE" ]] || die "NANOPI_VLESS_LINKS_FILE не читается: ${NANOPI_VLESS_LINKS_FILE}"
+      cat "$NANOPI_VLESS_LINKS_FILE"
+      echo
+    fi
+  } | while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line//$'\r'/}
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    printf '%s\n' "$line"
+  done
+}
+
+# Добавить узел в nodes.json: <nodes_file> <tag> <json-узла>
+vless_nodes_add() {
+  local file="$1" tag="$2" json="$3"
+  jq --arg tag "$tag" --argjson n "$json" '. + [{
+      tag: $tag, server: $n.server, server_port: $n.server_port, uuid: $n.uuid,
+      server_name: $n.server_name, public_key: $n.public_key, short_id: $n.short_id,
+      flow: $n.flow, fingerprint: $n.fingerprint
+    }]' "$file" >"${file}.new" && mv "${file}.new" "$file"
+}
+
+vless_tag_used() {
+  jq -e --arg t "$2" 'map(select(.tag == $t)) | length > 0' "$1" >/dev/null
+}
+
+# Узлы из NANOPI_VLESS_LINKS / NANOPI_VLESS_LINKS_FILE → nodes.json (без вопросов).
+# Имя: явное «имя vless://…», иначе из #remark, иначе nodeN; дубли → -2, -3…
+vless_nodes_from_links() {
+  local file="$1" line name link json tag base i n=0
+  while IFS= read -r line; do
+    n=$((n + 1))
+    name=""
+    link=$line
+    if [[ "$line" =~ ^([A-Za-z0-9_-]+)[[:space:]]+(.+)$ ]]; then
+      name=${BASH_REMATCH[1]}
+      link=${BASH_REMATCH[2]}
+    fi
+    json=$(parse_vless_link "$link") || die "узел #${n} из NANOPI_VLESS_LINKS: ссылка не принята (см. выше)"
+    [[ -n "$name" ]] || name=$(jq -r '.name' <<<"$json")
+    [[ -n "$name" ]] || name="node${n}"
+    base=$(normalize_vless_tag "$name")
+    tag=$base
+    i=1
+    while vless_tag_used "$file" "$tag"; do
+      i=$((i + 1))
+      tag="${base}-${i}"
+    done
+    vless_nodes_add "$file" "$tag" "$json"
+    echo "  узел #${n}: ${tag}"
+    vless_node_summary "$json"
+  done < <(vless_links_input)
+}
+
+# Ручной ввод узла по полям (запасной вариант к ссылке) → JSON как у parse_vless_link.
+vless_prompt_manual() {
+  local server port uuid sni pubkey shortid
+  server=$(ask "server (IP или hostname)")
+  [[ -n "$server" ]] || die "server пуст"
+  port=$(ask "port" "443")
+  [[ "$port" =~ ^[0-9]+$ ]] || die "port должен быть числом"
+  uuid=$(ask "UUID")
+  [[ -n "$uuid" ]] || die "UUID пуст"
+  sni=$(ask "Reality server_name (SNI)")
+  [[ -n "$sni" ]] || die "server_name пуст"
+  pubkey=$(ask "Reality public_key")
+  [[ -n "$pubkey" ]] || die "public_key пуст"
+  shortid=$(ask "Reality short_id")
+  [[ -n "$shortid" ]] || die "short_id пуст"
+  jq -n --arg server "$server" --argjson port "$port" --arg uuid "$uuid" \
+    --arg sni "$sni" --arg pub "$pubkey" --arg sid "$shortid" '{
+      server: $server, server_port: $port, uuid: $uuid,
+      server_name: $sni, public_key: $pub, short_id: $sid,
+      flow: "xtls-rprx-vision", fingerprint: "chrome",
+      remark: "", name: "", ignored: []
+    }'
+}
+
+# Один узел интерактивно: ссылка vless:// (Enter — по полям) → JSON в stdout.
+# Вопросы и сводка — в stderr (stdout занят JSON).
+vless_prompt_node() {
+  local link json
+  while true; do
+    link=$(ask "ссылка vless:// из 3x-ui (Enter — ввести поля вручную)")
+    if [[ -z "${link//[[:space:]]/}" ]]; then
+      vless_prompt_manual
+      return
+    fi
+    if ! json=$(parse_vless_link "$link"); then
+      echo "  ссылка не принята — вставь другую или Enter для ручного ввода" >&2
+      continue
+    fi
+    {
+      echo "  Разобрано:"
+      vless_node_summary "$json"
+    } >&2
+    if yesno "  Всё верно?" y; then
+      printf '%s\n' "$json"
+      return
+    fi
+  done
+}
+
 run_wizard_and_build() {
   local secret="$1"
   local nodes_tmp
   nodes_tmp=$(mktemp)
   echo '[]' > "$nodes_tmp"
 
-  explain \
-    "Мастер VLESS+Reality: узлы по одному (короткое имя, server, port, UUID, Reality).
+  local n=0 tag_in tag json def_name default_tag=""
+  if [[ -n "${NANOPI_VLESS_LINKS:-}${NANOPI_VLESS_LINKS_FILE:-}" ]]; then
+    explain \
+      "Узлы VLESS+Reality из NANOPI_VLESS_LINKS / NANOPI_VLESS_LINKS_FILE (ссылки vless:// из 3x-ui).
+Имя узла — из «имя vless://…», иначе из #remark; префикс vless- добавится сам." \
+      "Единый config.json с outbound’ами и selector proxy."
+    vless_nodes_from_links "$nodes_tmp"
+    [[ "$(jq 'length' "$nodes_tmp")" -ge 1 ]] || die "NANOPI_VLESS_LINKS: нет ни одной ссылки"
+    default_tag=$(jq -r '.[0].tag' "$nodes_tmp")
+    if [[ -n "${NANOPI_VLESS_DEFAULT:-}" ]]; then
+      default_tag=$NANOPI_VLESS_DEFAULT
+    fi
+    if [[ "${NANOPI_YES:-}" != "1" ]]; then
+      yesno "Собрать config.json из этих узлов?" y || die "отменено"
+    fi
+  else
+    [[ "${NANOPI_YES:-}" != "1" ]] \
+      || die "NANOPI_YES=1 без узлов: задай NANOPI_VLESS_LINKS или NANOPI_VLESS_LINKS_FILE (ссылки vless://)"
+    explain \
+      "Мастер VLESS+Reality: узлы по одному. Для каждого вставь ссылку vless:// из 3x-ui
+(Inbounds → клиент → «Копировать ссылку»): адрес, порт, UUID, pbk, sni, sid, fp, flow
+разберутся сами, покажу сводку (UUID и ключ — замаскированы) и спрошу подтверждение.
+Enter вместо ссылки — ввод по полям, как раньше.
 Когда хватит — откажись от «ещё один». Затем default для selector «proxy».
 
 Важно: к имени автоматически добавится префикс vless-
   germany  →  vless-germany
   finland  →  vless-finland
 Если введёшь уже vless-germany — префикс повторно не добавится." \
-    "Единый config.json с outbound’ами и selector proxy."
+      "Единый config.json с outbound’ами и selector proxy."
 
-  local n=0 tag_in tag server port uuid sni pubkey shortid default_tag=""
-  while true; do
-    n=$((n + 1))
-    echo
-    echo "─── Узел #$n ───"
-    echo "  (к имени добавится префикс vless-, если его ещё нет)"
-    tag_in=$(ask "короткое имя (латиница/цифры/дефис)" "node${n}")
-    [[ "$tag_in" =~ ^[A-Za-z0-9_-]+$ ]] || die "некорректное имя: $tag_in"
-    tag=$(normalize_vless_tag "$tag_in")
-    [[ "$tag" =~ ^[A-Za-z0-9_-]+$ ]] || die "некорректный tag: $tag"
-    echo "  → tag в конфиге: $tag"
-    if jq -e --arg t "$tag" 'map(select(.tag == $t)) | length > 0' "$nodes_tmp" >/dev/null; then
-      die "tag уже использован: $tag"
-    fi
-    server=$(ask "server (IP или hostname)")
-    [[ -n "$server" ]] || die "server пуст"
-    port=$(ask "port" "443")
-    [[ "$port" =~ ^[0-9]+$ ]] || die "port должен быть числом"
-    uuid=$(ask "UUID")
-    [[ -n "$uuid" ]] || die "UUID пуст"
-    sni=$(ask "Reality server_name (SNI)")
-    [[ -n "$sni" ]] || die "server_name пуст"
-    pubkey=$(ask "Reality public_key")
-    [[ -n "$pubkey" ]] || die "public_key пуст"
-    shortid=$(ask "Reality short_id")
-    [[ -n "$shortid" ]] || die "short_id пуст"
+    while true; do
+      n=$((n + 1))
+      echo
+      echo "─── Узел #$n ───"
+      json=$(vless_prompt_node)
+      def_name=$(jq -r '.name // empty' <<<"$json")
+      [[ -n "$def_name" ]] || def_name="node${n}"
+      echo "  (к имени добавится префикс vless-, если его ещё нет)"
+      while true; do
+        tag_in=$(ask "короткое имя (латиница/цифры/дефис)" "$def_name")
+        if ! [[ "$tag_in" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "  некорректное имя — только латиница, цифры, _ и -" >&2
+          continue
+        fi
+        tag=$(normalize_vless_tag "$tag_in")
+        if vless_tag_used "$nodes_tmp" "$tag"; then
+          echo "  tag уже использован: $tag — введи другое имя" >&2
+          continue
+        fi
+        break
+      done
+      echo "  → tag в конфиге: $tag"
+      vless_nodes_add "$nodes_tmp" "$tag" "$json"
+      echo "  добавлен: $tag → $(jq -r '.server' <<<"$json"):$(jq -r '.server_port' <<<"$json")"
+      [[ -n "$default_tag" ]] || default_tag=$tag
 
-    jq --arg tag "$tag" --arg server "$server" --argjson port "$port" \
-      --arg uuid "$uuid" --arg sni "$sni" --arg pub "$pubkey" --arg sid "$shortid" \
-      '. + [{
-        tag:$tag, server:$server, server_port:$port, uuid:$uuid,
-        server_name:$sni, public_key:$pub, short_id:$sid
-      }]' "$nodes_tmp" > "${nodes_tmp}.new"
-    mv "${nodes_tmp}.new" "$nodes_tmp"
-    echo "  добавлен: $tag → $server:$port"
-    [[ -n "$default_tag" ]] || default_tag=$tag
-
-    if ! yesno "Добавить ещё один узел?" y; then
-      break
-    fi
-  done
+      if ! yesno "Добавить ещё один узел?" y; then
+        break
+      fi
+    done
+  fi
 
   local count
   count=$(jq 'length' "$nodes_tmp")
@@ -1262,6 +1661,8 @@ EOF
     env_set_kv EDGE_VERSION "$EDGE_VERSION"
   fi
 
+  step 6b "Hairpin DNS (опционально)"
+  prompt_hairpin_dns
 
   step 7 "config.json"
   maybe_rebuild_config "$CLASH_SECRET_VALUE"
