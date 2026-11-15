@@ -568,7 +568,7 @@ policy_rc_restore() {
 install_packages() {
   detect_router_live
   local -a pkgs=(curl jq ca-certificates nftables dnsmasq ppp pppoe openssl
-    iproute2 procps kmod tar gzip)
+    iproute2 procps kmod tar gzip tcpdump)
   # ifupdown: нужен DHCP-клиент для «inet dhcp» (Debian 13 — dhcpcd-base)
   if [[ "$(detect_net_stack)" == ifupdown ]] \
      && ! command -v dhcpcd >/dev/null 2>&1 && ! command -v dhclient >/dev/null 2>&1 \

@@ -173,7 +173,7 @@ DHCP-клиент для `inet dhcp`: если нет `dhcpcd`/`dhclient`/`udhcp
 
 `install-singbox.sh` сам ставит недостающее через apt (неинтерактивно, конфиги
 не перетирает): `curl jq ca-certificates nftables dnsmasq ppp pppoe openssl
-iproute2 procps kmod tar gzip` (+ `dhcpcd-base` на ifupdown).
+iproute2 procps kmod tar gzip tcpdump` (+ `dhcpcd-base` на ifupdown).
 `install-webui.sh` при отсутствии ставит `curl`, `jq`, `ca-certificates`.
 
 Если **sing-box стоит пакетом** (`dpkg`: `sing-box` / `sing-box-beta`) — свежая
@@ -393,7 +393,7 @@ bash install-webui.sh
    запуска мастера — inbound `vless-mobile` восстановится сам.
 6. Свои правила маршрутизации (личные IP/подсети → proxy/direct) — панель **Конфиг**;
    в шаблоне их нет.
-7. Диагностические пакеты по желанию: `apt install dnsutils tcpdump htop rsync`.
+7. Диагностические пакеты по желанию: `apt install dnsutils htop rsync` (`tcpdump` ставится автоматически).
 
 ### Проброс портов
 

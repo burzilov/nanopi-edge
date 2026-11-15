@@ -81,6 +81,7 @@ check "выход скрипта (die) → policy-rc.d убран trap'ом" tes
 cat >"$B/apt-get" <<'S'
 #!/bin/bash
 echo "apt-get $1 policy=$([[ -e "$POLICY_RC_PATH" ]] && echo on || echo off)" >>"$LOG"
+[[ "$1" != install ]] || printf 'packages %s\n' "$*" >>"$LOG"
 S
 cat >"$B/dpkg-query" <<'S'
 #!/bin/bash
@@ -97,6 +98,7 @@ check "mask dnsmasq раньше apt-get install" bash -c '
   a=$(grep -n "apt-get install" "$LOG" | head -1 | cut -d: -f1)
   [[ -n "$m" && -n "$a" && "$m" -lt "$a" ]]'
 check "apt-get install при policy-rc.d" grep -q 'apt-get install policy=on' "$LOG"
+check "tcpdump входит в установку" grep -qE '^packages .*\btcpdump\b' "$LOG"
 check "после apt policy-rc.d нет" test ! -e "$WORK/p3"
 : >"$LOG"
 (POLICY_RC="$WORK/p4"; export POLICY_RC_PATH="$POLICY_RC"
