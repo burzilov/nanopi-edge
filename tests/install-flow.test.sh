@@ -107,6 +107,19 @@ check "после apt policy-rc.d нет" test ! -e "$WORK/p3"
 check "router live: dnsmasq не mask, policy-rc.d не ставим" \
   bash -c '! grep -q "mask dnsmasq" "$LOG" && grep -q "apt-get install policy=off" "$LOG"'
 
+# Повтор свежей установки после прерывания мастера сохраняет .env и секрет.
+OPT_ROOT="$WORK/resume-opt"; OPT_ENV="$OPT_ROOT/.env"; SB_DIR="$WORK/resume-sb"; SB_CFG="$SB_DIR/config.json"; SCRIPTS_DIR="$OPT_ROOT/scripts"
+mkdir -p "$SCRIPTS_DIR" "$SB_DIR"
+printf '#!/bin/sh\n' > "$SCRIPTS_DIR/router-on"; chmod +x "$SCRIPTS_DIR/router-on"
+printf 'CLASH_SECRET=retained-secret\nCUSTOM_SETTING=keep-me\nWAN_IF=eth0\nLAN_IF=eth1\n' > "$OPT_ENV"
+WAN_IF=eth0; LAN_IF=eth1; INSTALL_MODE=upgrade
+detect_install_mode
+check "повтор без config.json определяется как fresh" test "$INSTALL_MODE" = fresh
+(gen_clash_secrets) > "$WORK/resume.log" 2>&1; rc=$?
+check "повторный запуск сохраняет секрет и пользовательские ключи" bash -c 'test "$1" -eq 0 && grep -qx CLASH_SECRET=retained-secret "$2" && grep -qx CUSTOM_SETTING=keep-me "$2"' _ "$rc" "$OPT_ENV"
+touch "$SB_CFG"
+detect_install_mode
+check "существующий config.json определяется как upgrade" test "$INSTALL_MODE" = upgrade
 # ─── download_file: повторы ─────────────────────────────────────────
 cat >"$B/curl" <<'S'
 #!/bin/bash

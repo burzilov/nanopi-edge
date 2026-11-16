@@ -825,7 +825,7 @@ gen_clash_secrets() {
   if [[ -z "${secret:-}" ]]; then
     secret=$(openssl rand -hex 16)
   fi
-  if [[ "$INSTALL_MODE" == "upgrade" && -f "$OPT_ENV" ]]; then
+  if [[ -f "$OPT_ENV" ]]; then
     write_dotenv_merge "$secret"
   else
     write_dotenv_fresh "$secret"
@@ -1031,7 +1031,7 @@ render_singbox_config() {
     ($base[0]
       | .outbounds = (
           [ { type: "direct", tag: "direct" } ]
-          + ($n | map({
+          + ($n | map(. as $node | {
               type: "vless",
               tag: .tag,
               server: .server,
@@ -1049,7 +1049,8 @@ render_singbox_config() {
                   short_id: .short_id
                 }
               }
-            } | if .flow == "" then del(.flow) else . end))
+            } | if .flow == "" then del(.flow) else . end
+              | if $node.security == "tls" then del(.tls.reality) | if ($node.alpn | length) > 0 then .tls.alpn = $node.alpn else . end else . end))
           + [{
               type: "selector",
               tag: "proxy",
@@ -1296,7 +1297,7 @@ parse_vless_link() {
 
   # query → известные ключи (последнее значение выигрывает), остальные — в ignored
   local security="" type="" pbk="" sni="" sid="" fp="" flow="" encryption="" header_type=""
-  local have_pbk=0 have_sni=0 have_sid=0
+  local have_pbk=0 have_sni=0 have_sid=0 alpn="" unsupported=""
   local -a ignored=()
   local pair key val
   local IFS='&'
@@ -1312,6 +1313,9 @@ parse_vless_link() {
     val=$(vless_urldecode "$val" 1) || { echo "${err}: битое URL-кодирование в параметре ${key}" >&2; return 1; }
     case "$key" in
       security) security=$val ;;
+      alpn) alpn=$val ;;
+      path|host|serviceName|mode|authority|packetEncoding|ech|pqv) [[ -z "$val" ]] || unsupported=$key ;;
+      allowInsecure|insecure) [[ "$val" == "0" || "$val" == "false" || -z "$val" ]] || { echo "${err}: отключение проверки сертификата не поддерживается" >&2; return 1; } ;;
       type) type=$val ;;
       pbk) pbk=$val; have_pbk=1 ;;
       sni) sni=$val; have_sni=1 ;;
@@ -1330,9 +1334,9 @@ parse_vless_link() {
   esac
   case "$security" in
     reality) ;;
-    tls) echo "${err}: security=tls — шаблон поддерживает только Reality (security=reality)" >&2; return 1 ;;
-    "") echo "${err}: нет security=reality — шаблон поддерживает только Reality" >&2; return 1 ;;
-    *) echo "${err}: security=${security:0:20} не поддерживается (нужно reality)" >&2; return 1 ;;
+    tls) ;;
+    "") echo "${err}: нет security (нужно tls или reality)" >&2; return 1 ;;
+    *) echo "${err}: security=${security:0:20} не поддерживается (нужно tls или reality)" >&2; return 1 ;;
   esac
   case "${type:-tcp}" in
     tcp|raw) ;;
@@ -1340,17 +1344,26 @@ parse_vless_link() {
       echo "${err}: транспорт type=${type} пока не поддерживается шаблоном (только tcp) — в 3x-ui выбери Transmission: TCP (RAW)" >&2; return 1 ;;
     *) echo "${err}: неизвестный транспорт type=${type:0:20} (поддерживается только tcp)" >&2; return 1 ;;
   esac
+  [[ -z "$unsupported" ]] || { echo "${err}: параметр ${unsupported} не поддерживается" >&2; return 1; }
   case "${header_type:-none}" in
     none) ;;
     *) echo "${err}: headerType=${header_type:0:20} не поддерживается (нужно none)" >&2; return 1 ;;
   esac
+  if [[ "$security" == reality ]]; then
   if [[ "$have_pbk" -ne 1 || -z "$pbk" ]]; then echo "${err}: нет pbk (Reality public key)" >&2; return 1; fi
   if ! [[ "$pbk" =~ ^[A-Za-z0-9_-]{42,44}=?$ ]]; then echo "${err}: pbk не похож на Reality public key (base64url, 43 символа)" >&2; return 1; fi
-  if [[ "$have_sni" -ne 1 || -z "$sni" ]]; then echo "${err}: нет sni (Reality server_name)" >&2; return 1; fi
-  if ! [[ "$sni" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then echo "${err}: некорректный sni" >&2; return 1; fi
   if [[ "$have_sid" -ne 1 || -z "$sid" ]]; then echo "${err}: нет sid (Reality short_id)" >&2; return 1; fi
   if ! [[ "$sid" =~ ^[0-9A-Fa-f]{1,16}$ ]] || (( ${#sid} % 2 != 0 )); then
     echo "${err}: sid должен быть hex чётной длины до 16 символов" >&2; return 1
+  fi
+    [[ -n "$sni" ]] || { echo "${err}: нет sni (Reality server_name)" >&2; return 1; }
+  else
+    [[ "$have_pbk" -eq 0 && "$have_sid" -eq 0 ]] || { echo "${err}: параметры Reality несовместимы с TLS" >&2; return 1; }
+    [[ -n "$sni" ]] || sni=$host
+  fi
+  if ! [[ "$sni" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ || "$sni" == *:* ]]; then echo "${err}: некорректный sni" >&2; return 1; fi
+  if [[ -n "$alpn" && ! "$alpn" =~ ^[A-Za-z0-9._/-]+(,[A-Za-z0-9._/-]+)*$ ]]; then
+    echo "${err}: некорректный alpn" >&2; return 1
   fi
   case "$flow" in
     ""|xtls-rprx-vision) ;;
@@ -1377,11 +1390,11 @@ parse_vless_link() {
     ign_json=$(printf '%s\n' "${ignored[@]}" | jq -R . | jq -s 'unique')
   fi
   jq -n --arg server "$host" --argjson port "$port" --arg uuid "$uuid" \
-    --arg sni "$sni" --arg pbk "$pbk" --arg sid "$sid" --arg flow "$flow" --arg fp "$fp" \
+    --arg sni "$sni" --arg pbk "$pbk" --arg sid "$sid" --arg flow "$flow" --arg fp "$fp" --arg security "$security" --arg alpn "$alpn" \
     --arg remark "$remark" --arg name "$name" --argjson ignored "$ign_json" '{
       server: $server, server_port: $port, uuid: $uuid,
       server_name: $sni, public_key: $pbk, short_id: $sid,
-      flow: $flow, fingerprint: $fp,
+      flow: $flow, fingerprint: $fp, security: $security, alpn: (if $alpn == "" then [] else ($alpn | split(",")) end),
       remark: $remark, name: $name, ignored: $ignored
     }'
 }
@@ -1413,7 +1426,11 @@ vless_node_summary() {
   echo "  remark:      ${remark:-—}"
   echo "  сервер:      ${server}:${port}"
   echo "  UUID:        $(vless_mask "$uuid" 8)"
-  echo "  Reality:     sni=${sni}  pbk=$(vless_mask "$pbk" 6)  sid=${sid:0:2}…(${#sid})"
+  if [[ $(jq -r '.security // "reality"' <<<"$json") == tls ]]; then
+    echo "  TLS:         sni=${sni} (проверка сертификата включена)"
+  else
+    echo "  Reality:     sni=${sni}  pbk=$(vless_mask "$pbk" 6)  sid=${sid:0:2}…(${#sid})"
+  fi
   echo "  flow / fp:   ${flow:-—} / ${fp}"
   [[ -z "$ign" ]] || echo "  не используется sing-box: ${ign}"
 }
@@ -1446,7 +1463,7 @@ vless_nodes_add() {
       tag: $tag, server: $n.server, server_port: $n.server_port, uuid: $n.uuid,
       server_name: $n.server_name, public_key: $n.public_key, short_id: $n.short_id,
       flow: $n.flow, fingerprint: $n.fingerprint
-    }]' "$file" >"${file}.new" && mv "${file}.new" "$file"
+    } + (if $n.security == "tls" then {security: "tls", alpn: $n.alpn} else {} end)]' "$file" >"${file}.new" && mv "${file}.new" "$file"
 }
 
 vless_tag_used() {
@@ -1539,7 +1556,7 @@ run_wizard_and_build() {
   local n=0 tag_in tag json def_name default_tag=""
   if [[ -n "${NANOPI_VLESS_LINKS:-}${NANOPI_VLESS_LINKS_FILE:-}" ]]; then
     explain \
-      "Узлы VLESS+Reality из NANOPI_VLESS_LINKS / NANOPI_VLESS_LINKS_FILE (ссылки vless:// из 3x-ui).
+      "Узлы VLESS+Reality/TLS из NANOPI_VLESS_LINKS / NANOPI_VLESS_LINKS_FILE (ссылки vless:// из 3x-ui).
 Имя узла — из «имя vless://…», иначе из #remark; префикс vless- добавится сам." \
       "Единый config.json с outbound’ами и selector proxy."
     vless_nodes_from_links "$nodes_tmp"
@@ -1555,7 +1572,7 @@ run_wizard_and_build() {
     [[ "${NANOPI_YES:-}" != "1" ]] \
       || die "NANOPI_YES=1 без узлов: задай NANOPI_VLESS_LINKS или NANOPI_VLESS_LINKS_FILE (ссылки vless://)"
     explain \
-      "Мастер VLESS+Reality: узлы по одному. Для каждого вставь ссылку vless:// из 3x-ui
+      "Мастер VLESS+Reality/TLS: узлы по одному. Для каждого вставь ссылку vless:// из 3x-ui
 (Inbounds → клиент → «Копировать ссылку»): адрес, порт, UUID, pbk, sni, sid, fp, flow
 разберутся сами, покажу сводку (UUID и ключ — замаскированы) и спрошу подтверждение.
 Enter вместо ссылки — ввод по полям, как раньше.

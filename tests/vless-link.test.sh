@@ -92,7 +92,9 @@ bad_link "type=grpc" "${BASE}?type=grpc&security=reality&pbk=${PBK}&sni=a.exampl
 bad_link "type=ws" "${BASE}?type=ws&security=reality&pbk=${PBK}&sni=a.example&sid=ab" 'type=ws'
 bad_link "type=xhttp" "${BASE}?type=xhttp&security=reality&pbk=${PBK}&sni=a.example&sid=ab" 'type=xhttp'
 bad_link "headerType=http" "${BASE}?type=tcp&headerType=http&security=reality&pbk=${PBK}&sni=a.example&sid=ab" 'headerType'
-bad_link "security=tls" "${BASE}?type=tcp&security=tls&sni=a.example" 'только Reality'
+ok_link "security=tls и имя из ссылки" "${BASE}?type=tcp&security=tls&sni=a.example&alpn=h2%2Chttp%2F1.1#Finland" '.security=="tls" and .server_name=="a.example" and .name=="finland" and .alpn==["h2","http/1.1"]'
+bad_link "TLS без проверки сертификата" "${BASE}?security=tls&sni=a.example&allowInsecure=1" 'сертификат'
+bad_link "TLS с неподдерживаемым транспортом" "${BASE}?security=tls&type=ws&sni=a.example" 'type=ws'
 bad_link "без security" "${BASE}?type=tcp&pbk=${PBK}&sni=a.example&sid=ab" 'нет security'
 bad_link "encryption≠none" "${BASE}?encryption=mlkem768x25519plus&security=reality&pbk=${PBK}&sni=a.example&sid=ab" 'encryption'
 bad_link "flow=xtls-rprx-vision-udp443" "${BASE}?security=reality&pbk=${PBK}&sni=a.example&sid=ab&flow=xtls-rprx-vision-udp443" 'flow'
@@ -210,6 +212,15 @@ else
   fail "NANOPI_VLESS_LINKS с плохой ссылкой"; cat "$WORK/wiz.out"
 fi
 
+# TLS и Reality в одном списке, предложение тега из фрагмента.
+TLS_LINK="${BASE}?security=tls&sni=a.example&alpn=h2%2Chttp%2F1.1#Tls%20Finland"
+echo '[]' > "$WORK/tls-nodes.json"
+NANOPI_VLESS_LINKS="$TLS_LINK" vless_nodes_from_links "$WORK/tls-nodes.json" >/dev/null
+if [[ $(jq -r '.[0].tag' "$WORK/tls-nodes.json") == vless-tls-finland ]]; then pass "TLS: тег из фрагмента"; else fail "TLS: тег из фрагмента"; fi
+if render_singbox_config "$ROOT/templates/sing-box.config.json.tpl" "$WORK/tls-nodes.json" testsecret vless-tls-finland end0 > "$WORK/tls-config.json" && jq -e '.outbounds[] | select(.tag=="vless-tls-finland") | (.tls.enabled and (.tls | has("reality") | not) and .tls.server_name=="a.example" and .tls.alpn==["h2","http/1.1"])' "$WORK/tls-config.json" >/dev/null; then pass "TLS рендер без Reality"; else fail "TLS рендер без Reality"; fi
+# Смешанная конфигурация не меняет Reality при добавлении TLS.
+jq -s '.[0] + .[1]' "$WORK/tls-nodes.json" "$WORK/nodes.json" > "$WORK/mixed-nodes.json"
+if render_singbox_config "$ROOT/templates/sing-box.config.json.tpl" "$WORK/mixed-nodes.json" testsecret vless-tls-finland end0 > "$WORK/mixed-config.json" && jq -e '[.outbounds[] | select(.tag=="vless-tls-finland") | (.tls | has("reality") | not)][0] and [.outbounds[] | select(.tag=="vless-finland") | .tls.reality.enabled][0]' "$WORK/mixed-config.json" >/dev/null; then pass "TLS и Reality вместе"; else fail "TLS и Reality вместе"; fi
 # --- рендер: flow/fp из узлов, старые узлы без полей → как раньше
 jq '. + [{"tag":"vless-old","server":"vps.example.net","server_port":443,"uuid":"00000000-0000-4000-8000-000000000009",
   "server_name":"www.example.com","public_key":"'"$PBK"'","short_id":"0123abcd"}]
@@ -229,6 +240,7 @@ ob() { jq -c --arg t "$1" '.outbounds[] | select(.tag==$t)' "$OUT"; }
 [[ $(jq -c '[.route.rules[] | select(.outbound=="direct" and .ip_cidr) | .ip_cidr][0]' "$OUT") == '["198.51.100.7/32","203.0.113.10/32"]' ]] \
   && pass "IPv4 узлов из ссылок → правило direct" || fail "IPv4 узлов → правило direct"
 if command -v sing-box >/dev/null 2>&1; then
+  if sing-box check -c "$WORK/tls-config.json" >>"$WORK/check.log" 2>&1; then pass "sing-box check (TLS)"; else fail "sing-box check (TLS)"; cat "$WORK/check.log"; fi
   if sing-box check -c "$OUT" >"$WORK/check.log" 2>&1; then pass "sing-box check (узлы из ссылок)"
   else fail "sing-box check"; cat "$WORK/check.log"; fi
 else

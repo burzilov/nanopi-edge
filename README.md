@@ -230,10 +230,10 @@ vless://UUID@host:port?type=tcp&security=reality&pbk=…&fp=chrome&sni=…&sid=�
 несколько, затем выбирается default для selector `proxy`. Enter вместо ссылки —
 ввод по полям, как раньше.
 
-- Поддерживается только **VLESS + Reality поверх TCP** (`type=tcp`/`raw`,
-  `security=reality`, `encryption=none`); `pbk`, `sni`, `sid` обязательны.
-  `grpc`/`ws`/`xhttp`/`httpupgrade`, `security=tls`/`none` — ошибка (шаблон их не
-  умеет). `spx`, `pqv` и прочие неизвестные параметры игнорируются (видно в сводке).
+- Поддерживается **VLESS + Reality или TLS поверх TCP** (`type=tcp`/`raw`,
+  `security=reality` или `security=tls`, `encryption=none`); для Reality обязательны `pbk`, `sni`, `sid`. Для TLS проверка сертификата включена, SNI берётся из ссылки или адреса сервера; `alpn` поддерживается.
+  `grpc`/`ws`/`xhttp`/`httpupgrade`, `security=none` — ошибка (шаблон их не
+  умеет). `spx` и неизвестные параметры выводятся как неиспользуемые; неподдерживаемые настройки соединения отклоняются.
 - `flow`: `xtls-rprx-vision` или пусто (тогда без flow); `fp` — из ссылки
   (неизвестный → `chrome`). IPv6-адрес — в `[...]`.
 - IPv4-адрес узла получает route-правило `direct`; hostname и IPv6 — нет
