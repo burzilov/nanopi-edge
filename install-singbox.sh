@@ -437,12 +437,23 @@ download_scripts_bundle() {
 
 # Не устанавливаем метапакеты и другие ядра: только пакеты для текущего uname -r.
 ensure_conntrack() {
-  local proc_root="${NANOPI_PROC_SYS:-/proc/sys}" release pkg candidate installed=0
+  local proc_root="${NANOPI_PROC_SYS:-/proc/sys}" modules_root="${NANOPI_MODULES_ROOT:-/lib/modules}" release pkg candidate installed=0 dir other=""
   [[ -e "$proc_root/net/netfilter/nf_conntrack_max" ]] && return 0
   if modprobe nf_conntrack && [[ -e "$proc_root/net/netfilter/nf_conntrack_max" ]]; then
     return 0
   fi
   release=$(uname -r)
+  # После обновления ядра модули старой работающей версии могут быть удалены.
+  if [[ ! -d "$modules_root/$release" ]]; then
+    for dir in "$modules_root"/*; do
+      [[ -d "$dir" ]] || continue
+      other="${other:+$other, }${dir##*/}"
+    done
+    if [[ -n "$other" ]]; then
+      die "Для работающего ядра $release нет каталога модулей; найдены модули: $other. Возможно, ядро обновлено и требуется перезагрузка. Проверь ядро в /boot, перезагрузи систему и повтори установку. Пакеты автоматически не менялись."
+    fi
+    die "Для работающего ядра $release нет каталога модулей и других версий в $modules_root. Проверь установку ядра и модулей; автоматическая установка пакетов пропущена."
+  fi
   # modinfo учитывает сжатые модули и встроенные в ядро компоненты.
   if ! modinfo -k "$release" -F filename nf_conntrack >/dev/null 2>&1; then
     info "nf_conntrack для ядра $release не найден; проверяю точные пакеты ядра"

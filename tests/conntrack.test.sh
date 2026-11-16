@@ -4,8 +4,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 NANOPI_INSTALL_LIB_ONLY=1 source "$ROOT/install-singbox.sh"
-export NANOPI_PROC_SYS="$WORK/proc" LOG="$WORK/log" TEST_ROOT="$WORK"
+export NANOPI_PROC_SYS="$WORK/proc" NANOPI_MODULES_ROOT="$WORK/modules" LOG="$WORK/log" TEST_ROOT="$WORK"
 mkdir -p "$NANOPI_PROC_SYS/net/ipv4" "$NANOPI_PROC_SYS/net/netfilter" "$WORK/bin"
+mkdir -p "$NANOPI_MODULES_ROOT/$(uname -r)"
 export PATH="$WORK/bin:$PATH"
 printf '#!/bin/bash\necho "$*" >> "$LOG"\n' > "$WORK/bin/sysctl"
 cat > "$WORK/bin/modprobe" <<'S'
@@ -53,4 +54,21 @@ if ( MODINFO_STATUS=0 ensure_conntrack ) > "$WORK/failure" 2>&1; then
 fi
 ! grep -q 'apt-get' "$LOG"
 grep -q 'nf_conntrack недоступен' "$WORK/failure"
+# Запущенное ядро после обновления: модули только другой версии.
+rmdir "$NANOPI_MODULES_ROOT/$(uname -r)"
+mkdir -p "$NANOPI_MODULES_ROOT/next-kernel"
+: > "$LOG"
+if ( ensure_conntrack ) > "$WORK/reboot" 2>&1; then
+  echo 'FAIL: отсутствие модулей работающего ядра должно прервать установку' >&2; exit 1
+fi
+grep -q 'требуется перезагрузка' "$WORK/reboot"
+grep -q 'next-kernel' "$WORK/reboot"
+! grep -q 'apt-get' "$LOG"
+rmdir "$NANOPI_MODULES_ROOT/next-kernel"
+: > "$LOG"
+if ( ensure_conntrack ) > "$WORK/no-modules" 2>&1; then
+  echo 'FAIL: пустой каталог модулей должен прервать установку' >&2; exit 1
+fi
+grep -q 'других версий' "$WORK/no-modules"
+! grep -q 'apt-get' "$LOG"
 echo 'Тесты conntrack пройдены'
