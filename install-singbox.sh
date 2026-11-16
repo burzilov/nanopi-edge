@@ -435,6 +435,48 @@ download_scripts_bundle() {
   printf '%s\n' "$tag" >"$tmp/BUNDLE_TAG"
 }
 
+# Не устанавливаем метапакеты и другие ядра: только пакеты для текущего uname -r.
+ensure_conntrack() {
+  local proc_root="${NANOPI_PROC_SYS:-/proc/sys}" release pkg candidate installed=0
+  [[ -e "$proc_root/net/netfilter/nf_conntrack_max" ]] && return 0
+  if modprobe nf_conntrack && [[ -e "$proc_root/net/netfilter/nf_conntrack_max" ]]; then
+    return 0
+  fi
+  release=$(uname -r)
+  # modinfo учитывает сжатые модули и встроенные в ядро компоненты.
+  if ! modinfo -k "$release" -F filename nf_conntrack >/dev/null 2>&1; then
+    info "nf_conntrack для ядра $release не найден; проверяю точные пакеты ядра"
+    apt-get update || die "apt-get update не удался; проверь репозитории ядра Armbian"
+    for pkg in "linux-modules-$release" "linux-image-$release"; do
+      candidate=$(apt-cache policy "$pkg" | awk '/Candidate:/ {print $2; exit}')
+      [[ -n "$candidate" && "$candidate" != '(none)' ]] || continue
+      info "Устанавливаю $pkg для текущего ядра"
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$pkg" \
+        || die "не удалось установить $pkg; проверь состояние apt"
+      installed=1
+      modprobe nf_conntrack && [[ -e "$proc_root/net/netfilter/nf_conntrack_max" ]] && return 0
+    done
+  fi
+  die "nf_conntrack недоступен для ядра $release (пакет установлен: $installed). Проверь вывод modprobe -v nf_conntrack, uname -r и пакеты ядра Armbian; после обновления ядра может потребоваться перезагрузка."
+}
+
+# Применяем каждый параметр отдельно, не скрывая ошибки доступных ключей.
+apply_sysctl_file() {
+  local file="$1" proc_root="${NANOPI_PROC_SYS:-/proc/sys}" line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%%#*}
+    [[ "$line" == *'='* ]] || continue
+    key=${line%%=*}; value=${line#*=}
+    key=$(printf '%s' "$key" | tr -d '[:space:]')
+    value=$(printf '%s' "$value" | tr -d '[:space:]')
+    [[ -n "$key" ]] || continue
+    if [[ ! -e "$proc_root/${key//.//}" && "$key" == net.netfilter.nf_conntrack_* ]]; then
+      info "Параметр $key недоступен, пропускаю"
+      continue
+    fi
+    sysctl -w "$key=$value" || die "не удалось применить $key"
+  done < "$file"
+}
 # conntrack: модуль при загрузке + hashsize (modprobe.d и сразу в /sys). Идемпотентно.
 install_conntrack_tuning() {
   local tpl="$1" want cur param=/sys/module/nf_conntrack/parameters/hashsize
@@ -443,7 +485,7 @@ install_conntrack_tuning() {
   mkdir -p /etc/modprobe.d /etc/modules-load.d
   install -m 644 "$tpl/nanopi-conntrack.modprobe.conf" /etc/modprobe.d/nanopi-conntrack.conf
   install -m 644 "$tpl/nanopi-conntrack.modules-load.conf" /etc/modules-load.d/nanopi-conntrack.conf
-  modprobe nf_conntrack 2>/dev/null || info "modprobe nf_conntrack не удался — hashsize применится после перезагрузки"
+  ensure_conntrack
   want=$(sed -n 's/^[[:space:]]*options[[:space:]]\+nf_conntrack[[:space:]].*hashsize=\([0-9]\+\).*/\1/p' \
     /etc/modprobe.d/nanopi-conntrack.conf | head -1)
   if [[ -n "$want" && -w "$param" ]]; then
@@ -529,7 +571,7 @@ Unit sing-box и drop-in dnsmasq поставлю позже — после би
   # conntrack до sysctl: без загруженного nf_conntrack ключи net.netfilter.* не применятся
   install_conntrack_tuning "$templates_dst"
   install -m 644 "$templates_dst/99-nanopi-forward.conf" /etc/sysctl.d/99-nanopi-forward.conf
-  sysctl -p /etc/sysctl.d/99-nanopi-forward.conf
+  apply_sysctl_file /etc/sysctl.d/99-nanopi-forward.conf
   remove_dup_sysctl /etc/sysctl.d/98-nanopi-conntrack.conf /etc/sysctl.d/99-nanopi-forward.conf
 
   rm -rf "$stage" "$_SCRIPTS_INSTALL_TMP"
