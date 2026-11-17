@@ -48,9 +48,28 @@ wan_pppoe_active=$(systemctl is-active nanopi-wan-pppoe.service 2>/dev/null || e
 
 last_err=""
 if [[ "$mode" == pppoe ]]; then
+  # Журнал исторический: не выводим исходные строки, в них могут быть секреты.
   last_err=$(journalctl -u nanopi-wan-pppoe.service -n 30 --no-pager -o cat 2>/dev/null \
-    | grep -iE 'failed|error|timeout|CHAP|PAP|Connection terminated|Modem hangup' \
-    | tail -3 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)
+    | awk '
+      {
+        line = tolower($0); event = ""
+        if (line ~ /(authenticat[^ ]*.*(fail|reject|denied)|(^|[^a-z])(chap|pap)([^a-z].*)?(fail|reject|denied)|peer refused to authenticate)/)
+          event = "ошибка аутентификации"
+        else if (line ~ /(timed out|timeout|time-out|no response to.*(discovery|padi|lcp)|lcp:.*(timeout|terminated by peer))/)
+          event = "время ожидания истекло"
+        else if (line ~ /(connection terminated|modem hangup|carrier lost|link (is )?(down|terminated)|lcp terminated by peer)/)
+          event = "соединение разорвано"
+        else if (line ~ /(^|[^a-z])(failed|failure|error)([^a-z]|$)/)
+          event = "ошибка подключения"
+        if (event != "") events[++n] = event
+      }
+      END {
+        if (n) {
+          printf "Прошлые события журнала PPPoE: "
+          start = n > 3 ? n - 2 : 1
+          for (i = start; i <= n; i++) printf "%s%s", (i > start ? "; " : ""), events[i]
+        }
+      }' || true)
 fi
 
 if command -v jq >/dev/null 2>&1; then

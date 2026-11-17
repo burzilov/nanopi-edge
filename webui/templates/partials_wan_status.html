@@ -1,17 +1,21 @@
 {{define "partials/wan/status"}}
 <div class="card-head">
   <h2 class="card-title">Интернет у провайдера (WAN)</h2>
-  <span class="pill {{if eq .WAN.Mode "pppoe"}}warn{{else}}ok{{end}}">{{if .WAN.Mode}}{{.WAN.Mode}}{{else}}—{{end}}</span>
+  <span class="pill muted">{{if and (not .WANErr) .WAN.Mode}}{{.WAN.Mode}}{{else}}—{{end}}</span>
 </div>
 <p class="hint">Как NanoPi получает интернет от ISP: по обычному кабелю (DHCP)
   или по логину/паролю провайдера (PPPoE). Домашний роутер подключается к NanoPi
   с другой стороны (LAN) и раздаёт сеть клиентам.</p>
-{{if .WANErr}}<p class="err">{{.WANErr}}</p>{{end}}
+{{if .WANErr}}
+<p class="err">Не удалось получить состояние WAN: {{.WANErr}}</p>
+{{else}}
 <dl class="kv">
   {{if eq .WAN.Mode "pppoe"}}
-  <div><dt>Сессия PPPoE</dt><dd><span class="pill {{if .WAN.PPP0Up}}ok{{else}}bad{{end}}">{{if .WAN.PPP0Up}}работает {{.WAN.PPP0IP}}{{else}}нет связи{{end}}</span></dd></div>
+  <div><dt>Сессия PPPoE</dt><dd>{{if and .WAN.PPP0Up .WAN.PPP0IP}}<span class="pill ok">Подключено: {{.WAN.PPP0IP}}</span>{{else}}<span class="pill bad">Нет подключения</span> <span class="hint">Адрес ещё ожидается или подключение не удалось.</span>{{end}}</dd></div>
+  {{else if eq .WAN.Mode "dhcp"}}
+  <div><dt>Подключение DHCP</dt><dd>{{if .WAN.WanIP}}<span class="pill ok">Подключено: {{.WAN.WanIP}}</span>{{else}}<span class="pill bad">Нет подключения</span> <span class="hint">Адрес ещё ожидается или подключение не удалось.</span>{{end}}</dd></div>
   {{else}}
-  <div><dt>IP у провайдера</dt><dd><code>{{if .WAN.WanIP}}{{.WAN.WanIP}}{{else}}—{{end}}</code></dd></div>
+  <div><dt>Подключение WAN</dt><dd><span class="pill muted">Состояние неизвестно</span></dd></div>
   {{end}}
   <div><dt>К домашнему роутеру</dt><dd>
     <span class="pill {{if eq .WAN.Dnsmasq "active"}}ok{{else}}bad{{end}}">DHCP <span class="num">{{.WAN.LanDHCPLeases}}</span></span>
@@ -21,5 +25,6 @@
   <div><dt>MAC WAN (аппаратный)</dt><dd><code>{{if .WAN.MACPermanent}}{{.WAN.MACPermanent}}{{else}}—{{end}}</code></dd></div>
   <div><dt>Адрес NanoPi</dt><dd><code>{{if .WAN.LanIP}}{{.WAN.LanIP}}{{else}}10.10.10.1{{end}}</code></dd></div>
 </dl>
-{{if .WAN.LastError}}<p class="err wan-last-err">{{.WAN.LastError}}</p>{{end}}
+{{if and (eq .WAN.Mode "pppoe") (not (and .WAN.PPP0Up .WAN.PPP0IP)) .WAN.LastError}}<p class="err wan-last-err">Недавняя диагностика PPPoE (не обязательно причина текущего состояния): {{.WAN.LastError}}</p>{{end}}
+{{end}}
 {{end}}
