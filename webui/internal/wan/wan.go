@@ -18,23 +18,26 @@ const (
 )
 
 type Status struct {
-	Mode           string `json:"mode"`
-	User           string `json:"user"`
-	Password       string `json:"password"`
-	VLAN           string `json:"vlan"`
-	WanIF          string `json:"wan_if"`
-	LanIF          string `json:"lan_if"`
-	WanIP          string `json:"wan_ip"`
-	LanIP          string `json:"lan_ip"`
-	PPP0Up         bool   `json:"ppp0_up"`
-	PPP0IP         string `json:"ppp0_ip"`
-	LanDHCPLeases  int    `json:"lan_dhcp_leases"`
-	LanPPPoEUp     bool   `json:"lan_pppoe_up"`
-	LanPPPoEIF     string `json:"lan_pppoe_if"`
-	Dnsmasq        string `json:"dnsmasq"`
-	PPPoEServer    string `json:"pppoe_server"`
-	WanPPPoEUnit   string `json:"wan_pppoe_unit"`
-	LastError      string `json:"last_error"`
+	Mode          string `json:"mode"`
+	User          string `json:"user"`
+	Password      string `json:"password"`
+	VLAN          string `json:"vlan"`
+	WanIF         string `json:"wan_if"`
+	LanIF         string `json:"lan_if"`
+	WanIP         string `json:"wan_ip"`
+	LanIP         string `json:"lan_ip"`
+	PPP0Up        bool   `json:"ppp0_up"`
+	PPP0IP        string `json:"ppp0_ip"`
+	LanDHCPLeases int    `json:"lan_dhcp_leases"`
+	LanPPPoEUp    bool   `json:"lan_pppoe_up"`
+	LanPPPoEIF    string `json:"lan_pppoe_if"`
+	Dnsmasq       string `json:"dnsmasq"`
+	PPPoEServer   string `json:"pppoe_server"`
+	WanPPPoEUnit  string `json:"wan_pppoe_unit"`
+	LastError     string `json:"last_error"`
+	MACConfigured string `json:"mac_configured"`
+	MACCurrent    string `json:"mac_current"`
+	MACPermanent  string `json:"mac_permanent"`
 }
 
 type ApplyReq struct {
@@ -77,6 +80,7 @@ func GetStatus() (Status, error) {
 	if err := json.Unmarshal(stdout.Bytes(), &st); err != nil {
 		return Status{}, fmt.Errorf("wan-status json: %w", err)
 	}
+	readMACStatus(&st, "/sys/class/net")
 	return st, nil
 }
 
@@ -84,7 +88,7 @@ func Apply(req ApplyReq) error {
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	switch mode {
 	case "dhcp":
-		return runScript(DHCPScript())
+		return runScript(DHCPScript(), true)
 	case "pppoe":
 		vlan := strings.TrimSpace(req.VLAN)
 		if vlan != "" {
@@ -97,13 +101,14 @@ func Apply(req ApplyReq) error {
 		if vlan != "" {
 			args = append(args, vlan)
 		}
-		return runScript(PPPoEScript(), args...)
+		return runScript(PPPoEScript(), true, args...)
 	default:
 		return fmt.Errorf("неизвестный mode: %s (dhcp|pppoe)", req.Mode)
 	}
 }
 
-func runScript(path string, args ...string) error {
+// runScript запускает скрипт; settle=true — короткая пауза после PPPoE/DHCP apply.
+func runScript(path string, settle bool, args ...string) error {
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("нет скрипта %s: %w", path, err)
 	}
@@ -120,7 +125,8 @@ func runScript(path string, args ...string) error {
 		}
 		return fmt.Errorf("%s: %w\n%s", path, err, out)
 	}
-	// дать pppd чуть времени после Apply
-	time.Sleep(400 * time.Millisecond)
+	if settle {
+		time.Sleep(400 * time.Millisecond)
+	}
 	return nil
 }

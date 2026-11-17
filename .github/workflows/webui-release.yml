@@ -91,14 +91,15 @@ jobs:
           VER="${{ steps.ver.outputs.version }}"
           STAGE="nanopi-edge-scripts"
           mkdir -p "/tmp/${STAGE}/scripts" "/tmp/${STAGE}/templates"
-          cp -r scripts/* "/tmp/${STAGE}/scripts/"
+          # Только файлы верхнего уровня scripts/ (без подкаталогов).
+          find scripts -maxdepth 1 -type f -exec cp -a {} "/tmp/${STAGE}/scripts/" \;
           cp -r templates/* "/tmp/${STAGE}/templates/"
           printf '%s\n' "$VER" > "/tmp/${STAGE}/VERSION"
           ARCHIVE="nanopi-edge-scripts.tar.gz"
           tar -C /tmp -czf "${GITHUB_WORKSPACE}/${ARCHIVE}" "$STAGE"
           echo "scripts_archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
           tar tzf "${GITHUB_WORKSPACE}/${ARCHIVE}"
-          test "$(find /tmp/${STAGE}/scripts -type f | wc -l)" -eq 9
+          test "$(find /tmp/${STAGE}/scripts -type f | wc -l)" -eq 10
           test "$(find /tmp/${STAGE}/templates -type f | wc -l)" -eq 24
 
       - name: Upload artifacts (workflow)

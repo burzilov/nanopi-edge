@@ -717,6 +717,7 @@ input[type="checkbox"], input[type="radio"] {
 /* Подписи полей: над полем. */
 .field-grid label,
 .wan-form label,
+.wan-mac-form label,
 .ports-form label,
 .vless-pick,
 .mv-profile-box label {
@@ -728,6 +729,7 @@ input[type="checkbox"], input[type="radio"] {
 }
 .field-grid input, .field-grid select,
 .wan-form input, .wan-form select,
+.wan-mac-form input,
 .ports-form input:not([type="checkbox"]), .ports-form select,
 .vless-pick select,
 .mv-profile-box textarea { display: block; margin-top: var(--space-2xs); }
@@ -770,6 +772,8 @@ form > textarea.wide + button { margin-top: var(--space-sm); }
 .pass-toggle { padding: var(--space-2xs) var(--space-sm); font-weight: 550; }
 .wan-actions { margin-top: var(--space-xs); }
 .wan-last-err { font-size: var(--text-sm); }
+.wan-mac-form { margin-top: var(--space-md); }
+.wan-mac-form #wan-mac-result { min-height: 1.25em; margin: var(--space-2xs) 0 0; }
 
 /* ---------- Логи: чернильная плашка ---------- */
 .logs {

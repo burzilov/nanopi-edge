@@ -49,6 +49,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleHome)
 	mux.HandleFunc("GET /partials/status", s.handleStatusPartial)
 	mux.HandleFunc("GET /partials/wan", s.handleWanPartial)
+	mux.HandleFunc("GET /partials/wan/status", s.handleWanStatusPartial)
 	mux.HandleFunc("POST /proxy", s.handleProxySet)
 	mux.HandleFunc("POST /sing-box/restart", s.handleRestart)
 	mux.HandleFunc("GET /logs", s.handleLogs)
@@ -87,6 +88,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/wan", s.handleAPIWanGet)
 	mux.HandleFunc("POST /api/wan", s.handleAPIWanPost)
 	mux.HandleFunc("POST /wan", s.handleWanForm)
+	mux.HandleFunc("POST /wan/mac", s.handleWanMAC)
+	mux.HandleFunc("POST /api/wan/mac", s.handleWanMAC)
 	return mux
 }
 
@@ -139,6 +142,10 @@ func (s *Server) handleStatusPartial(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWanPartial(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "partials/wan", s.status())
+}
+
+func (s *Server) handleWanStatusPartial(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "partials/wan/status", s.status())
 }
 
 func (s *Server) handleProxySet(w http.ResponseWriter, r *http.Request) {
@@ -632,6 +639,37 @@ func (s *Server) handleAPIWanGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleWanMAC(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MAC *string `json:"mac"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 8192))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if err := dec.Decode(new(any)); err != io.EOF || req.MAC == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "требуется единственный JSON-объект с полем mac"})
+		return
+	}
+	mac, err := wan.NormalizeMAC(*req.MAC)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := wan.ApplyMAC(mac); err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	st, err := wan.GetStatus()
+	if err != nil {
+		s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "warning": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
 }
 
 func (s *Server) handleAPIWanPost(w http.ResponseWriter, r *http.Request) {

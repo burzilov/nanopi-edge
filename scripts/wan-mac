@@ -1,0 +1,248 @@
+#!/bin/bash
+# Переопределение MAC на WAN (независимо от dhcp/pppoe).
+# Пустой аргумент — вернуть аппаратный (permanent) MAC.
+# Использование: wan-mac <MAC|"">
+# Если текущий MAC уже нужный и persist-конфиг на месте — без down/up.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/common.sh"
+
+WAN_MAC_SYSFS="${WAN_MAC_SYSFS:-/sys/class/net}"
+WAN_MAC_IFUP_HOOK="${WAN_MAC_IFUP_HOOK:-/etc/network/if-pre-up.d/nanopi-wan-mac}"
+WAN_MAC_NETPLAN="${WAN_MAC_NETPLAN:-${NETPLAN_DIR}/99-nanopi-wan-mac.yaml}"
+WAN_MAC_LOCK="${WAN_MAC_LOCK:-/run/lock/nanopi-wan-mac.lock}"
+WAN_MAC_MARKER="# Managed by nanopi-edge wan-mac"
+IP_BIN="${WAN_MAC_IP:-ip}"
+ETHTOOL_BIN="${WAN_MAC_ETHTOOL:-ethtool}"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Нормализация: пусто OK; иначе lowercase unicast != 00:00:00:00:00:00.
+normalize_mac() {
+  local raw="${1:-}" first
+  raw=$(printf '%s' "$raw" | tr -d '[:space:]' | tr 'A-F' 'a-f')
+  [[ -z "$raw" ]] && { printf ''; return 0; }
+  [[ "$raw" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die "MAC должен быть вида aa:bb:cc:dd:ee:ff"
+  [[ "$raw" == "00:00:00:00:00:00" ]] && die "MAC не может быть нулевым"
+  first=${raw%%:*}
+  if (( 16#$first & 1 )); then
+    die "MAC должен быть unicast (не multicast)"
+  fi
+  printf '%s' "$raw"
+}
+
+read_sys() {
+  local iface="$1" name="$2" f
+  f="${WAN_MAC_SYSFS}/${iface}/${name}"
+  [[ -r "$f" ]] || return 1
+  tr -d '[:space:]' <"$f"
+}
+
+iface_is_up() {
+  local flags
+  flags=$(read_sys "$1" flags) || return 1
+  (( flags & 1 ))
+}
+
+ensure_managed_target() {
+  local path="$1"
+  [[ -e "$path" ]] || return 0
+  [[ ! -L "$path" ]] || die "отказ: $path — symlink"
+  head -n 5 "$path" | grep -Fq "$WAN_MAC_MARKER" \
+    || die "отказ: $path не управляется nanopi-edge (нет маркера)"
+}
+
+write_atomic() {
+  local dest="$1" mode="$2" tmp
+  mkdir -p "$(dirname "$dest")"
+  tmp=$(mktemp "${dest}.XXXXXX")
+  cat >"$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
+# iface уже проверен на безопасный алфавит — достаточно одинарных кавычек (POSIX sh).
+write_ifupdown_hook() {
+  local iface="$1" mac="$2"
+  write_atomic "$WAN_MAC_IFUP_HOOK" 755 <<EOF
+#!/bin/sh
+${WAN_MAC_MARKER}
+[ "\$IFACE" != '${iface}' ] || ip link set dev "\$IFACE" address ${mac}
+EOF
+}
+
+write_netplan_mac() {
+  local iface="$1" mac="$2"
+  write_atomic "$WAN_MAC_NETPLAN" 600 <<EOF
+${WAN_MAC_MARKER}
+network:
+  version: 2
+  ethernets:
+    ${iface}:
+      macaddress: "${mac}"
+EOF
+}
+
+permanent_mac() {
+  local iface="$1" current="$2" saved out perm assign
+  saved=$(printf '%s' "${WAN_PERMANENT_MAC:-}" | tr -d '[:space:]' | tr 'A-F' 'a-f')
+  if [[ -n "$saved" ]]; then
+    normalize_mac "$saved"
+    return 0
+  fi
+  if command -v "$ETHTOOL_BIN" >/dev/null 2>&1; then
+    out=$("$ETHTOOL_BIN" -P "$iface" 2>/dev/null || true)
+    perm=$(printf '%s' "$out" | sed -n 's/.*[Pp]ermanent address:[[:space:]]*//p' | head -1 | tr -d '[:space:]' | tr 'A-F' 'a-f')
+    if [[ -n "$perm" ]]; then
+      normalize_mac "$perm"
+      return 0
+    fi
+  fi
+  if perm=$(read_sys "$iface" perm_address 2>/dev/null); then
+    if [[ -n "$perm" ]]; then
+      normalize_mac "$perm"
+      return 0
+    fi
+  fi
+  if assign=$(read_sys "$iface" addr_assign_type 2>/dev/null); then
+    if [[ "$assign" == "0" && -z "${WAN_MAC:-}" ]]; then
+      normalize_mac "$current"
+      return 0
+    fi
+  fi
+  die "не удалось определить аппаратный MAC — отказ сохранять возможно подменённый адрес"
+}
+
+set_live_mac() {
+  local iface="$1" mac="$2" was_up="$3"
+  "$IP_BIN" link set dev "$iface" down
+  "$IP_BIN" link set dev "$iface" address "$mac"
+  if [[ "$was_up" == "1" ]]; then
+    "$IP_BIN" link set dev "$iface" up
+  fi
+}
+
+restore_target() {
+  local path="$1" bak="$2"
+  if [[ -n "$bak" && -f "$bak" ]]; then
+    cp -a "$bak" "$path"
+  else
+    rm -f "$path"
+  fi
+}
+
+persist_matches() {
+  local requested="$1" target="$2"
+  if [[ -n "$requested" ]]; then
+    [[ -f "$target" ]] || return 1
+    grep -Fq "$WAN_MAC_MARKER" "$target" || return 1
+    grep -Fq "$requested" "$target" || return 1
+    return 0
+  fi
+  [[ ! -e "$target" ]]
+}
+
+sync_env() {
+  local factory="$1" requested="$2"
+  nanopi_set_env_kv WAN_PERMANENT_MAC "$factory"
+  nanopi_set_env_kv WAN_MAC "$requested"
+  WAN_PERMANENT_MAC=$factory
+  WAN_MAC=$requested
+}
+
+main() {
+  [[ $# -eq 1 ]] || die "usage: wan-mac <MAC|empty>"
+  local requested current factory stack target desired was_up=0
+  local target_bak="" env_bak="" changed_live=0
+
+  requested=$(normalize_mac "${1:-}")
+  nanopi_load_env
+  nanopi_net_require_stack
+
+  [[ "$WAN_IF" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,14}$ ]] || die "некорректный WAN_IF"
+  [[ -d "${WAN_MAC_SYSFS}/${WAN_IF}" ]] || die "нет интерфейса ${WAN_IF}"
+
+  current=$(normalize_mac "$(read_sys "$WAN_IF" address)")
+  if iface_is_up "$WAN_IF"; then was_up=1; fi
+  factory=$(permanent_mac "$WAN_IF" "$current")
+  stack=$(nanopi_net_stack)
+
+  case "$stack" in
+    netplan) target=$WAN_MAC_NETPLAN ;;
+    ifupdown) target=$WAN_MAC_IFUP_HOOK ;;
+    *) die "неподдерживаемый стек: $stack" ;;
+  esac
+
+  ensure_managed_target "$target"
+  desired=${requested:-$factory}
+
+  # Уже применено (типичный путь reapply после wan-dhcp/wan-pppoe) — без down/up.
+  if [[ "$current" == "$desired" ]] && persist_matches "$requested" "$target"; then
+    sync_env "$factory" "$requested"
+    echo "[ok] wan-mac: $desired (unchanged)"
+    return 0
+  fi
+
+  if [[ -e "$target" ]]; then
+    target_bak=$(mktemp)
+    cp -a "$target" "$target_bak"
+  fi
+  env_bak=$(mktemp)
+  cp -a "$ENV_FILE" "$env_bak"
+
+  rollback() {
+    restore_target "$target" "${target_bak:-}"
+    if [[ -n "${env_bak:-}" && -f "$env_bak" ]]; then
+      cp -a "$env_bak" "$ENV_FILE"
+    fi
+    if [[ "$changed_live" -eq 1 ]]; then
+      set_live_mac "$WAN_IF" "$current" "$was_up" \
+        || echo "WARN: откат live MAC не удался" >&2
+      if [[ "$stack" == netplan ]]; then
+        ${NANOPI_NETPLAN:-netplan} apply >/dev/null 2>&1 \
+          || echo "WARN: откат netplan apply не удался" >&2
+      fi
+    fi
+  }
+  trap 'rollback; rm -f "${target_bak:-}" "${env_bak:-}"' ERR
+
+  if [[ -n "$requested" ]]; then
+    case "$stack" in
+      netplan) write_netplan_mac "$WAN_IF" "$requested" ;;
+      ifupdown) write_ifupdown_hook "$WAN_IF" "$requested" ;;
+    esac
+  else
+    rm -f "$target"
+  fi
+
+  sync_env "$factory" "$requested"
+
+  if [[ "$stack" == netplan ]]; then
+    ${NANOPI_NETPLAN:-netplan} generate
+  fi
+
+  if [[ "$current" != "$desired" ]]; then
+    changed_live=1
+    set_live_mac "$WAN_IF" "$desired" "$was_up"
+  fi
+
+  if [[ "$stack" == netplan ]]; then
+    # generate/apply нужны для persist; live уже выставлен выше при необходимости.
+    ${NANOPI_NETPLAN:-netplan} apply
+  fi
+
+  trap - ERR
+  rm -f "${target_bak:-}" "${env_bak:-}"
+
+  if [[ -n "$requested" ]]; then
+    echo "[ok] wan-mac: $desired (configured)"
+  else
+    echo "[ok] wan-mac: $desired (permanent)"
+  fi
+}
+
+mkdir -p "$(dirname "$WAN_MAC_LOCK")"
+exec 9>"$WAN_MAC_LOCK"
+flock 9
+main "$@"

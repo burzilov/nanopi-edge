@@ -692,6 +692,20 @@ nanopi_ifupdown_restore() {
   return 0
 }
 
+
+# Повторно применить сохранённый WAN_MAC после переписывания сетевых шаблонов.
+# wan-mac сам не делает down/up, если адрес и persist-конфиг уже совпадают.
+nanopi_reapply_wan_mac() {
+  local mac="${WAN_MAC:-}" script envf="${ENV_FILE:-/opt/nanopi-edge/.env}"
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wan-mac"
+  [[ -x "$script" ]] || return 0
+  # Без ключа WAN_MAC в .env ничего не делаем (N100 и свежие установки).
+  if ! grep -qE "^[[:space:]]*(export[[:space:]]+)?WAN_MAC=" "$envf" 2>/dev/null; then
+    return 0
+  fi
+  "$script" "$mac" || echo "WARN: wan-mac reapply failed" >&2
+}
+
 nanopi_net_apply() {
   case "$(nanopi_net_stack)" in
     netplan) ${NANOPI_NETPLAN:-netplan} apply ;;

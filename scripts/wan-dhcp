@@ -20,6 +20,7 @@ nanopi_write_ppp_auth_secrets "" ""
 nanopi_ensure_lan_dual_serve
 
 nanopi_net_apply
+nanopi_reapply_wan_mac
 ip link set "$WAN_IF" up || true
 # nftables снова (после применения сети); exclude + restart sing-box — последним
 nanopi_restart_nftables

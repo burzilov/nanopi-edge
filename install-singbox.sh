@@ -23,7 +23,7 @@
 # не пересобирает /etc/sing-box/config.json.
 #
 # Повседневное управление — /opt/nanopi-edge/scripts/ (из release bundle):
-#   router-on | lab-on | wan-dhcp | wan-pppoe | wan-status | proxy-select | hairpin-dns-refresh
+#   router-on | lab-on | wan-dhcp | wan-pppoe | wan-mac | wan-status | proxy-select | hairpin-dns-refresh
 #   inbound-status   # метаданные мобильного VLESS (без секретов)
 #
 set -euo pipefail
@@ -563,7 +563,7 @@ Unit sing-box и drop-in dnsmasq поставлю позже — после би
   [[ -f "$scripts_src/common.sh" ]] || die "в bundle нет scripts/common.sh"
 
   install -m 644 "$scripts_src/common.sh" "$SCRIPTS_DIR/common.sh"
-  for f in router-on lab-on wan-dhcp wan-pppoe wan-status proxy-select hairpin-dns-refresh inbound-status; do
+  for f in router-on lab-on wan-dhcp wan-pppoe wan-mac wan-status proxy-select hairpin-dns-refresh inbound-status; do
     [[ -f "$scripts_src/$f" ]] || die "в bundle нет scripts/$f"
     install -m 755 "$scripts_src/$f" "$SCRIPTS_DIR/$f"
   done
@@ -2038,6 +2038,12 @@ print_cutover() {
    Откат на DHCP: ${SCRIPTS_DIR}/wan-dhcp
    Статус: ${SCRIPTS_DIR}/wan-status | jq .
 
+5b) Подмена MAC WAN (если провайдер привязан к MAC роутера)
+   В панели — блок «MAC-адрес WAN», или:
+     ${SCRIPTS_DIR}/wan-mac aa:bb:cc:dd:ee:ff
+     ${SCRIPTS_DIR}/wan-mac ''   # вернуть аппаратный
+   Независимо от DHCP/PPPoE; пустой аргумент снимает переопределение.
+
 6) Проверки
    С ПК: ping роутера; ping 10.10.10.1; браузер → панель.
    С NanoPi (ssh root@10.10.10.1):
@@ -2076,6 +2082,7 @@ Usage: $0 [install|status|test]
   ${SCRIPTS_DIR}/lab-on
   ${SCRIPTS_DIR}/wan-dhcp
   ${SCRIPTS_DIR}/wan-pppoe [user] [pass] [vlan]
+  ${SCRIPTS_DIR}/wan-mac [aa:bb:cc:dd:ee:ff|'']
   ${SCRIPTS_DIR}/wan-status
   ${SCRIPTS_DIR}/proxy-select list|get|set <tag>
 EOF

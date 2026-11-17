@@ -28,10 +28,39 @@
 
   document.body.addEventListener("htmx:beforeRequest", function (ev) {
     var elt = ev.detail && ev.detail.elt;
-    if (elt && elt.id === "wan" && ev.detail.requestConfig && ev.detail.requestConfig.verb === "get") {
-      if (wanBusy()) {
-        ev.preventDefault();
+    if (!elt || !ev.detail.requestConfig || ev.detail.requestConfig.verb !== "get") return;
+    if ((elt.id === "wan" || elt.id === "wan-info") && wanBusy()) {
+      ev.preventDefault();
+    }
+  });
+
+  document.body.addEventListener("submit", async function (ev) {
+    var form = ev.target;
+    if (!form || form.id !== "wan-mac-form") return;
+    ev.preventDefault();
+    var result = document.getElementById("wan-mac-result");
+    var button = form.querySelector("button[type=submit]");
+    var macInput = form.elements && form.elements.mac;
+    if (!macInput) return;
+    if (button) button.disabled = true;
+    if (result) result.textContent = "Применяю…";
+    try {
+      var response = await fetch("/api/wan/mac", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({mac: macInput.value})
+      });
+      var data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "Ошибка применения");
+      if (data.status && Object.prototype.hasOwnProperty.call(data.status, "mac_configured")) {
+        macInput.value = data.status.mac_configured || "";
       }
+      if (result) result.textContent = data.warning || "MAC применён";
+      if (window.htmx) htmx.trigger("#wan-info", "refresh");
+    } catch (err) {
+      if (result) result.textContent = err.message || "Ошибка применения";
+    } finally {
+      if (button) button.disabled = false;
     }
   });
 
